@@ -933,6 +933,51 @@ ENGINE = InnoDB;
 
 
 -- -----------------------------------------------------
+-- Table cosedComponent
+-- Handle cosedComponentID in code, so they can be
+--  the same on multiple databases
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS cosedComponent ;
+
+CREATE  TABLE IF NOT EXISTS cosedComponent (
+  cosedComponentID int(11) NOT NULL UNIQUE ,
+  units VARCHAR(16) NOT NULL DEFAULT 'mM',
+  description TEXT NULL DEFAULT NULL ,
+  viscosity TEXT NULL DEFAULT NULL ,
+  density TEXT NULL DEFAULT NULL ,
+  c_range TEXT NULL DEFAULT NULL ,
+  PRIMARY KEY (cosedComponentID) )
+ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table buffercosedLink
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS buffercosedLink ;
+
+CREATE  TABLE IF NOT EXISTS buffercosedLink (
+  bufferID int(11) NOT NULL ,
+  cosedComponentID int(11) NOT NULL ,
+  concentration FLOAT NULL ,
+  s_value FLOAT DEFAULT NULL,
+  d_value FLOAT DEFAULT NULL,
+  overlaying TINYINT(1) NOT NULL DEFAULT 0,
+  INDEX ndx_bufferLink_bufferID (bufferID ASC) ,
+  INDEX ndx_bufferLink_bufferComponentID (cosedComponentID ASC) ,
+  CONSTRAINT fk_buffercosedLink_bufferID
+    FOREIGN KEY (bufferID )
+    REFERENCES buffer (bufferID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE,
+  CONSTRAINT fk_buffercosedLink_cosedComponentID
+    FOREIGN KEY (cosedComponentID )
+    REFERENCES cosedComponent (cosedComponentID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE)
+ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
 -- Table analyte
 -- -----------------------------------------------------
 DROP TABLE IF EXISTS analyte ;
