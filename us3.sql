@@ -108,6 +108,9 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   aprofileGUID varchar(80) NULL,
   analysisIDs longtext NULL,
   intensityID int(11) NULL,
+  operatorID  int(11) NULL,
+  statusID    int(11) NULL,
+  failedID    int(11) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -142,9 +145,50 @@ CREATE  TABLE IF NOT EXISTS autoflowHistory (
   aprofileGUID varchar(80) NULL,
   analysisIDs longtext NULL,
   intensityID int(11) NULL,
+  operatorID  int(11) NULL,
+  statusID    int(11) NULL,
+  failedID    int(11) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
+
+
+-----------------------------------------------------
+-- Table autoflowFailed --
+-----------------------------------------------------
+DROP TABLE IF EXISTS autoflowFailed;
+
+CREATE TABLE autoflowFailed (
+  ID                int(11)      NOT NULL AUTO_INCREMENT,
+  autoflowID        int(11)      NOT NULL UNIQUE,
+  failedStage       text,
+  failedMsg         json,
+  failedTs          timestamp    NULL,
+
+  PRIMARY KEY (ID)
+  ) ENGINE=InnoDB;
+
+
+-----------------------------------------------------
+-- Table autoflowStatus --
+-----------------------------------------------------
+DROP TABLE IF EXISTS autoflowStatus;
+
+CREATE TABLE autoflowStatus (
+  ID                int(11)      NOT NULL AUTO_INCREMENT,
+  autoflowID        int(11)      NOT NULL UNIQUE,
+  importRI          json,
+  importRIts        timestamp    NULL,
+  importIP          json,
+  importIPts        timestamp    NULL,
+  editRI            json,
+  editRIts          timestamp    NULL,
+  editIP            json,
+  editIPts          timestamp    NULL,
+  analysis          json,
+
+  PRIMARY KEY (ID) )
+  ENGINE=InnoDB;
 
 
 -----------------------------------------------------
@@ -2171,6 +2215,27 @@ CREATE TABLE extinctionProfile (
   xml longtext DEFAULT NULL ,
   PRIMARY KEY (profileID) ,
   INDEX ndx_component_ID (componentID ASC) )
+ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table referenceScan
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS referenceScan;
+CREATE TABLE IF NOT EXISTS referenceScan (
+  ID INT(11) NOT NULL AUTO_INCREMENT,
+  instrumentID INT(11) NOT NULL,
+  personID INT(11) NOT NULL, 
+  type CHAR(2) NOT NULL,
+  experimentIDs VARCHAR(250) NOT NULL,
+  referenceTime DATE NOT NULL,
+  nWavelength INT(11) NOT NULL,
+  nPoints INT(11) NOT NULL,
+  startWavelength DECIMAL(4, 1) NOT NULL,
+  stopWavelength DECIMAL(4, 1) NOT NULL,
+  data LONGBLOB NULL,
+  lastUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (ID) )
 ENGINE = InnoDB;
 
 
