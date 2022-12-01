@@ -520,7 +520,7 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     SELECT    COUNT(*)
     INTO      count_components
-    FROM      cosedComponent;
+    FROM      buffercosedLink;
 
     IF ( count_components = 0 ) THEN
       SET @US3_LAST_ERRNO = @NOROWS;
@@ -531,9 +531,9 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT cosedComponentID, description
-      FROM cosedcomponent
-      ORDER BY description;
+      SELECT cosedComponentID, name
+      FROM buffercosedLink
+      ORDER BY name;
 
     END IF;
 
@@ -600,7 +600,7 @@ BEGIN
 
   SELECT     COUNT(*)
   INTO       count_components
-  FROM       cosedcomponent
+  FROM       buffercosedLink
   WHERE      cosedComponentID = p_componentID;
 
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
@@ -613,8 +613,8 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   units, description, viscosity, density, c_range
-      FROM     cosedcomponent
+      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, viscosity, density, concentration
+      FROM     buffercosedLink
       WHERE    cosedComponentID = p_componentID;
 
     END IF;
@@ -689,11 +689,13 @@ DROP PROCEDURE IF EXISTS add_cosed_component$$
 CREATE PROCEDURE add_cosed_component ( p_personGUID    CHAR(36),
                                         p_password      VARCHAR(80),
                                         p_bufferID      INT,
-                                        p_componentID   INT,
+                                        p_name          TEXT,
                                         p_concentration FLOAT,
                                         p_s_coeff       FLOAT,
                                         p_d_coeff       FLOAT,
-                                        p_overlaying    TINYINT(1))
+                                        p_overlaying    TINYINT(1),
+                                        p_density       TEXT,
+                                        p_viscosity     TEXT)
   MODIFIES SQL DATA
 
 BEGIN
@@ -710,11 +712,6 @@ BEGIN
   FROM       buffer
   WHERE      bufferID = p_bufferID;
 
-  SELECT     COUNT(*)
-  INTO       count_components
-  FROM       cosedcomponent
-  WHERE      cosedComponentID = p_componentID;
-
   IF ( verify_buffer_permission( p_personGUID, p_password, p_bufferID ) = @OK ) THEN
     IF ( count_buffers < 1 ) THEN
       SET @US3_LAST_ERRNO = @NO_BUFFER;
@@ -722,20 +719,16 @@ BEGIN
                                    p_bufferID,
                                    ' exists' );
 
-    ELSEIF ( count_components < 1 ) THEN
-      SET @US3_LAST_ERRNO = @NO_COMPONENT;
-      SET @US3_LAST_ERROR = CONCAT('MySQL: No cosed component with ID ',
-                                   p_componentID,
-                                   ' exists' );
-
     ELSE
       INSERT INTO buffercosedlink SET
         bufferID          = p_bufferID,
-        cosedComponentID  = p_componentID,
+        name              = p_name,
         concentration     = p_concentration,
         s_value           = p_s_coeff,
         d_value           = p_d_coeff,
-        overlaying        = p_overlaying;
+        overlaying        = p_overlaying,
+        density           = p_density,
+        viscosity         = p_viscosity;
 
       SET @LAST_INSERT_ID = LAST_INSERT_ID();
 
@@ -834,11 +827,10 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   l.cosedComponentID, description, viscosity, density, concentration, s_value, d_value, overlaying
-      FROM     buffercosedlink l, cosedcomponent c
-      WHERE    l.cosedComponentID = c.cosedComponentID
-      AND      l.bufferID = p_bufferID
-      ORDER BY description;
+      SELECT   l.cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying
+      FROM     buffercosedlink l
+      WHERE    l.bufferID = p_bufferID
+      ORDER BY name;
 
     END IF;
 
