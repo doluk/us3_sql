@@ -613,7 +613,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, viscosity, density, concentration
+      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying
       FROM     buffercosedLink
       WHERE    cosedComponentID = p_componentID;
 
@@ -827,9 +827,9 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   l.cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying
+      SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying
       FROM     buffercosedlink l
-      WHERE    l.bufferID = p_bufferID
+      WHERE    bufferID = p_bufferID
       ORDER BY name;
 
     END IF;
