@@ -5,6 +5,7 @@ DROP TABLE IF EXISTS buffercosedLink ;
 
 CREATE  TABLE IF NOT EXISTS buffercosedLink (
   bufferID int(11) NOT NULL ,
+  cosedComponentGUID CHAR(36) NOT NULL UNIQUE ,
   cosedComponentID int(11) NOT NULL AUTO_INCREMENT ,
   name TEXT NULL DEFAULT NULL,
   concentration FLOAT NULL,
@@ -103,6 +104,53 @@ END;
 -- -----------------------------------------------------
 -- create new procedures
 -- -----------------------------------------------------
+DROP PROCEDURE IF EXISTS get_cosed_componentID;
+CREATE PROCEDURE get_cosed_componentID ( p_personGUID CHAR(36),
+                                p_password   VARCHAR(80),
+                                p_cosed_componentGUID CHAR(36) )
+  READS SQL DATA
+
+BEGIN
+
+  DECLARE count_buff INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET count_buff   = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+
+    SELECT    COUNT(*)
+    INTO      count_buff
+    FROM      buffercosedLink
+    WHERE     cosedComponentGUID = p_cosed_componentGUID;
+
+    IF ( TRIM( p_cosed_componentGUID ) = '' ) THEN
+      SET @US3_LAST_ERRNO = @EMPTY;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: The cosed_componentGUID parameter to the get_cosed_componentID ',
+                                    'function cannot be empty' );
+
+    ELSEIF ( count_buff < 1 ) THEN
+      SET @US3_LAST_ERRNO = @NOROWS;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   cosedComponentID
+      FROM     buffercosedLink
+      WHERE    cosedComponentGUID = p_cosed_componentGUID;
+
+    END IF;
+
+  END IF;
+
+END;
+
+
 
 -- SELECTs descriptions for all cosedimenting components
 CREATE PROCEDURE get_cosed_component_desc ( p_personGUID CHAR(36),
@@ -130,7 +178,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT cosedComponentID, name
+      SELECT cosedComponentID, name, cosedComponentGUID
       FROM buffercosedLink
       ORDER BY name;
 
@@ -169,7 +217,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying
+      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, cosedComponentGUID
       FROM     buffercosedLink
       WHERE    cosedComponentID = p_componentID;
 
@@ -183,16 +231,21 @@ BEGIN
 END;
 
 -- adds a new cosedimenting component from cosedComponent
-CREATE PROCEDURE add_buffer_component ( p_personGUID    CHAR(36),
+CREATE PROCEDURE add_cosed_component ( p_personGUID    CHAR(36),
                                         p_password      VARCHAR(80),
+                                        p_componentGUID CHAR(36),
                                         p_bufferID      INT,
-                                        p_componentID   INT,
-                                        p_concentration FLOAT )
+                                        p_name          TEXT,
+                                        p_concentration FLOAT,
+                                        p_s_coeff       FLOAT,
+                                        p_d_coeff       FLOAT,
+                                        p_overlaying    TINYINT(1),
+                                        p_density       TEXT,
+                                        p_viscosity     TEXT)
   MODIFIES SQL DATA
 
 BEGIN
   DECLARE count_buffers    INT;
-  DECLARE count_components INT;
 
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
@@ -204,11 +257,6 @@ BEGIN
   FROM       buffer
   WHERE      bufferID = p_bufferID;
 
-  SELECT     COUNT(*)
-  INTO       count_components
-  FROM       bufferComponent
-  WHERE      bufferComponentID = p_componentID;
-
   IF ( verify_buffer_permission( p_personGUID, p_password, p_bufferID ) = @OK ) THEN
     IF ( count_buffers < 1 ) THEN
       SET @US3_LAST_ERRNO = @NO_BUFFER;
@@ -216,17 +264,17 @@ BEGIN
                                    p_bufferID,
                                    ' exists' );
 
-    ELSEIF ( count_components < 1 ) THEN
-      SET @US3_LAST_ERRNO = @NO_COMPONENT;
-      SET @US3_LAST_ERROR = CONCAT('MySQL: No buffer component with ID ',
-                                   p_componentID,
-                                   ' exists' );
-
     ELSE
-      INSERT INTO bufferLink SET
+      INSERT INTO buffercosedlink SET
+        cosedComponentGUID= p_componentGUID,
         bufferID          = p_bufferID,
-        bufferComponentID = p_componentID,
-        concentration     = p_concentration;
+        name              = p_name,
+        concentration     = p_concentration,
+        s_value           = p_s_coeff,
+        d_value           = p_d_coeff,
+        overlaying        = p_overlaying,
+        density           = p_density,
+        viscosity         = p_viscosity;
 
       SET @LAST_INSERT_ID = LAST_INSERT_ID();
 
@@ -275,7 +323,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying
+      SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying, cosedComponentGUID
       FROM     buffercosedlink l
       WHERE    bufferID = p_bufferID
       ORDER BY name;
@@ -283,5 +331,56 @@ BEGIN
     END IF;
 
   END IF;
+
+END;
+
+DROP PROCEDURE IF EXISTS update_cosed_component;
+CREATE PROCEDURE update_cosed_component ( p_personGUID    CHAR(36),
+                                        p_password      VARCHAR(80),
+                                        p_bufferID      INT,
+                                        p_cosedID       INT,
+                                        p_name          TEXT,
+                                        p_concentration FLOAT,
+                                        p_s_coeff       FLOAT,
+                                        p_d_coeff       FLOAT,
+                                        p_overlaying    TINYINT(1),
+                                        p_density       TEXT,
+                                        p_viscosity     TEXT)
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE not_found     TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR NOT FOUND
+    SET not_found = 1;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  IF ( verify_buffer_permission( p_personGUID, p_password, p_bufferID ) = @OK ) THEN
+    UPDATE buffercosedLink SET
+      name            = p_name,
+      concentration   = p_concentration,
+      s_value         = p_s_coeff,
+      d_value         = p_d_coeff,
+      density         = p_density,
+      viscosity       = p_viscosity,
+      overlaying      = p_overlaying
+    WHERE bufferID    = p_bufferID and
+     cosedComponentID = p_cosedID;
+
+    IF ( not_found = 1 ) THEN
+      SET @US3_LAST_ERRNO = @NO_BUFFER;
+      SET @US3_LAST_ERROR = "MySQL: No cosed component with that ID exists for this buffer ID";
+
+    ELSE
+      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
 
 END;

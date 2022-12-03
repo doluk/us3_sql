@@ -287,6 +287,53 @@ BEGIN
 
 END$$
 
+-- Returns the bufferID associated with the given bufferGUID
+DROP PROCEDURE IF EXISTS get_cosed_componentID$$
+CREATE PROCEDURE get_cosed_componentID ( p_personGUID CHAR(36),
+                                p_password   VARCHAR(80),
+                                p_cosed_componentGUID CHAR(36) )
+  READS SQL DATA
+
+BEGIN
+
+  DECLARE count_buff INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET count_buff   = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+
+    SELECT    COUNT(*)
+    INTO      count_buff
+    FROM      buffercosedLink
+    WHERE     cosedComponentGUID = p_cosed_componentGUID;
+
+    IF ( TRIM( p_cosed_componentGUID ) = '' ) THEN
+      SET @US3_LAST_ERRNO = @EMPTY;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: The cosed_componentGUID parameter to the get_cosed_componentID ',
+                                    'function cannot be empty' );
+
+    ELSEIF ( count_buff < 1 ) THEN
+      SET @US3_LAST_ERRNO = @NOROWS;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   cosedComponentID
+      FROM     buffercosedLink
+      WHERE    cosedComponentGUID = p_cosed_componentGUID;
+
+    END IF;
+
+  END IF;
+
+END$$
+
 -- Returns the bufferID and description of all buffers associated with p_ID
 --  If p_ID = 0, retrieves information about all buffers in db
 --  Regular user can only get info about his own buffers and public ones
@@ -531,7 +578,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT cosedComponentID, name
+      SELECT cosedComponentID, name, cosedComponentGUID
       FROM buffercosedLink
       ORDER BY name;
 
@@ -613,7 +660,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying
+      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, cosedComponentGUID
       FROM     buffercosedLink
       WHERE    cosedComponentID = p_componentID;
 
@@ -684,10 +731,11 @@ BEGIN
 END$$
 
 
--- adds a new cosedimenting component from cosedComponent
+-- adds a new cosedimenting component
 DROP PROCEDURE IF EXISTS add_cosed_component$$
 CREATE PROCEDURE add_cosed_component ( p_personGUID    CHAR(36),
                                         p_password      VARCHAR(80),
+                                        p_componentGUID CHAR(36),
                                         p_bufferID      INT,
                                         p_name          TEXT,
                                         p_concentration FLOAT,
@@ -700,7 +748,6 @@ CREATE PROCEDURE add_cosed_component ( p_personGUID    CHAR(36),
 
 BEGIN
   DECLARE count_buffers    INT;
-  DECLARE count_components INT;
 
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
@@ -721,6 +768,7 @@ BEGIN
 
     ELSE
       INSERT INTO buffercosedlink SET
+        cosedComponentGUID= p_componentGUID,
         bufferID          = p_bufferID,
         name              = p_name,
         concentration     = p_concentration,
@@ -730,6 +778,58 @@ BEGIN
         density           = p_density,
         viscosity         = p_viscosity;
 
+      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- adds a new cosedimenting component
+DROP PROCEDURE IF EXISTS update_cosed_component$$
+CREATE PROCEDURE update_cosed_component ( p_personGUID    CHAR(36),
+                                        p_password      VARCHAR(80),
+                                        p_bufferID      INT,
+                                        p_cosedID       INT,
+                                        p_name          TEXT,
+                                        p_concentration FLOAT,
+                                        p_s_coeff       FLOAT,
+                                        p_d_coeff       FLOAT,
+                                        p_overlaying    TINYINT(1),
+                                        p_density       TEXT,
+                                        p_viscosity     TEXT)
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE not_found     TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR NOT FOUND
+    SET not_found = 1;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  IF ( verify_buffer_permission( p_personGUID, p_password, p_bufferID ) = @OK ) THEN
+    UPDATE buffercosedLink SET
+      name            = p_name,
+      concentration   = p_concentration,
+      s_value         = p_s_coeff,
+      d_value         = p_d_coeff,
+      density         = p_density,
+      viscosity       = p_viscosity,
+      overlaying      = p_overlaying
+    WHERE bufferID    = p_bufferID and
+     cosedComponentID = p_cosedID;
+
+    IF ( not_found = 1 ) THEN
+      SET @US3_LAST_ERRNO = @NO_BUFFER;
+      SET @US3_LAST_ERROR = "MySQL: No cosed component with that ID exists for this buffer ID";
+
+    ELSE
       SET @LAST_INSERT_ID = LAST_INSERT_ID();
 
     END IF;

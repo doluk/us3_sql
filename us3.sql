@@ -982,6 +982,7 @@ DROP TABLE IF EXISTS buffercosedLink ;
 
 CREATE  TABLE IF NOT EXISTS buffercosedLink (
   bufferID int(11) NOT NULL ,
+  cosedComponentGUID CHAR(36) NOT NULL UNIQUE ,
   cosedComponentID int(11) NOT NULL AUTO_INCREMENT ,
   name TEXT NULL DEFAULT NULL,
   concentration FLOAT NULL,
