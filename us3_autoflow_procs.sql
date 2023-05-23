@@ -32,7 +32,36 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     SELECT    COUNT(*)
     INTO      count_records
-    FROM      autoflow;
+    FROM      autoflow
+    WHERE     devRecord = "NO";
+    
+  END IF;
+
+  RETURN( count_records );
+
+END$$
+
+-- Returns the count of autoflow DEV records in db
+DROP FUNCTION IF EXISTS count_autoflow_dev_records$$
+CREATE FUNCTION count_autoflow_dev_records ( p_personGUID CHAR(36),
+                                   	     p_password   VARCHAR(80) )
+                                       
+  RETURNS INT
+  READS SQL DATA
+
+BEGIN
+
+  DECLARE count_records INT;
+
+  CALL config();
+  SET count_records = 0;
+
+       
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    SELECT    COUNT(*)
+    INTO      count_records
+    FROM      autoflow
+    WHERE     devRecord = "YES";
     
   END IF;
 
@@ -122,6 +151,159 @@ BEGIN
   SELECT @US3_LAST_ERRNO AS status;
 
 END$$
+
+
+-- adds autoflow record for ProtDev
+DROP PROCEDURE IF EXISTS add_autoflow_record_dev$$
+CREATE PROCEDURE add_autoflow_record_dev ( p_personGUID  CHAR(36),
+                                     	  p_password      VARCHAR(80),
+                                     	  p_protname      VARCHAR(80),
+                                     	  p_cellchnum     VARCHAR(80),
+                                     	  p_triplenum     VARCHAR(80),
+				     	  p_duration      INT,
+				     	  p_runname       VARCHAR(80),
+				     	  p_expid         INT,
+					  p_optimaname    VARCHAR(300),
+					  p_invID         INT,
+					  p_label         VARCHAR(80),
+					  p_aprofileguid  VARCHAR(80),
+					  p_operatorID    INT )
+                                    
+  MODIFIES SQL DATA
+
+BEGIN
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflow SET
+      protname          = p_protname,
+      cellChNum         = p_cellchnum,
+      tripleNum         = p_triplenum,
+      duration          = p_duration,
+      runName           = p_runname,
+      expID             = p_expid,
+      optimaName        = p_optimaname,
+      invID             = p_invID,
+      created           = NOW(),
+      label		= p_label,
+      gmpRun            = 'YES',
+      aprofileGUID      = p_aprofileguid,
+      operatorID        = p_operatorID,
+      devRecord         = 'YES';
+
+    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+-- Mark DEV autoflowHistory record as 'Processed'
+DROP PROCEDURE IF EXISTS mark_autoflowHistoryDevRun_Processed$$
+CREATE PROCEDURE mark_autoflowHistoryDevRun_Processed ( p_personGUID  CHAR(36),
+                                     	  	      p_password      VARCHAR(80),
+                                     	  	      p_ID            INT )
+                                    
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowHistory
+  WHERE      ID = p_ID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowHistory
+      SET      devRecord = 'Processed'
+      WHERE    ID = p_ID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+-- adds autoflow record for ProtDev [OLD - when starting from 4. EDIT]
+DROP PROCEDURE IF EXISTS add_autoflow_record_dev_old$$
+CREATE PROCEDURE add_autoflow_record_dev_old ( p_personGUID  CHAR(36),
+                                     	 p_password      VARCHAR(80),
+                                     	 p_protname      VARCHAR(80),
+                                     	 p_cellchnum     VARCHAR(80),
+                                     	 p_triplenum     VARCHAR(80),
+				     	 p_duration      INT,
+				     	 p_runname       VARCHAR(80),
+				     	 p_expid         INT,
+					 p_runID         INT,
+					 p_dataPath      VARCHAR(300),
+					 p_optimaname    VARCHAR(300),
+					 p_runStarted    TEXT,
+					 p_invID         INT,
+					 p_correctRadii  TEXT,
+					 p_aborted       TEXT,
+					 p_label         VARCHAR(80),
+					 p_filename      VARCHAR(300),
+				     	 p_aprofileguid  VARCHAR(80),
+					 p_operatorID    INT )
+                                    
+  MODIFIES SQL DATA
+
+BEGIN
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflow SET
+      protname          = p_protname,
+      cellChNum         = p_cellchnum,
+      tripleNum         = p_triplenum,
+      duration          = p_duration,
+      runName           = p_runname,
+      expID             = p_expid,
+      runID             = p_runID,
+      status            = 'EDIT_DATA',
+      dataPath          = p_dataPath,
+      optimaName        = p_optimaname,
+      runStarted        = p_runStarted,
+      invID             = p_invID,
+      created           = NOW(),
+      corrRadii         = p_correctRadii,
+      expAborted        = p_aborted,
+      label		= p_label,
+      gmpRun            = 'NO',
+      filename          = p_filename,
+      aprofileGUID      = p_aprofileguid,
+      operatorID        = p_operatorID,
+      devRecord         = 'YES';
+
+    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
 
 -- adds autoflowHistory record
 DROP PROCEDURE IF EXISTS new_autoflow_history_record$$
@@ -342,7 +524,7 @@ BEGIN
       SELECT   protName, cellChNum, tripleNum, duration, runName, expID, 
       	       runID, status, dataPath, optimaName, runStarted, invID, created, 
 	       corrRadii, expAborted, label, gmpRun, filename, aprofileGUID, analysisIDs,
-               intensityID, statusID, failedID
+               intensityID, statusID, failedID, operatorID, devRecord
       FROM     autoflow 
       WHERE    ID = p_autoflowID;
 
@@ -354,8 +536,6 @@ BEGIN
   END IF;
 
 END$$
-
-
 
 -- Returns complete information about autoflowHistory record
 DROP PROCEDURE IF EXISTS read_autoflow_history_record$$
@@ -389,7 +569,7 @@ BEGIN
       SELECT   protName, cellChNum, tripleNum, duration, runName, expID, 
       	       runID, status, dataPath, optimaName, runStarted, invID, created, 
 	       corrRadii, expAborted, label, gmpRun, filename, aprofileGUID, analysisIDs,
-               intensityID, statusID, failedID
+               intensityID, statusID, failedID, operatorID, devRecord
       FROM     autoflowHistory 
       WHERE    ID = p_autoflowID;
 
@@ -419,7 +599,8 @@ BEGIN
 
   SELECT     COUNT(*)
   INTO       count_records
-  FROM       autoflow;
+  FROM       autoflow
+  WHERE      devRecord = "NO";
 
 
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
@@ -434,7 +615,8 @@ BEGIN
 
       SELECT   ID, protName, cellChNum, tripleNum, duration, runName, expID, 
       	       runID, status, dataPath, optimaName, runStarted, invID, created, gmpRun, filename, operatorID, failedID  
-      FROM     autoflow;
+      FROM     autoflow
+      WHERE    devRecord = "NO";
      
     END IF;
 
@@ -444,6 +626,52 @@ BEGIN
   END IF;
 
 END$$
+
+-- Returns information about autoflow DEV records for listing
+DROP PROCEDURE IF EXISTS get_autoflow_dev_desc$$
+CREATE PROCEDURE get_autoflow_dev_desc ( p_personGUID    CHAR(36),
+                                         p_password      VARCHAR(80) )
+                                     
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflow
+  WHERE      devRecord = "YES";
+
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   ID, protName, cellChNum, tripleNum, duration, runName, expID, 
+      	       runID, status, dataPath, optimaName, runStarted, invID, created, gmpRun, filename, operatorID, failedID  
+      FROM     autoflow
+      WHERE    devRecord = "YES";
+     
+    END IF;
+
+  ELSE
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END IF;
+
+END$$
+
+
 
 
 
@@ -477,7 +705,8 @@ BEGIN
       SELECT @OK AS status;
 
       SELECT   ID, protName, cellChNum, tripleNum, duration, runName, expID, 
-      	       runID, status, dataPath, optimaName, runStarted, invID, created, gmpRun, filename  
+      	       runID, status, dataPath, optimaName, runStarted, invID, created, gmpRun, filename,
+	       operatorID, failedID, devRecord   
       FROM     autoflowHistory;
      
     END IF;
@@ -640,6 +869,48 @@ BEGIN
     ELSE
       UPDATE   autoflow
       SET      expAborted = 'YES'
+      WHERE    runID = p_runID AND optimaName = p_optima;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
+-- Update autoflow record with expAborted_[REMOTELY] at LIVE_UPDATE
+DROP PROCEDURE IF EXISTS update_autoflow_at_live_update_expaborted_remotely$$
+CREATE PROCEDURE update_autoflow_at_live_update_expaborted_remotely ( p_personGUID    CHAR(36),
+                                             			    p_password      VARCHAR(80),
+								    p_statusID      INT,
+                                       	     			    p_runID    	    INT,
+                                                		    p_optima        VARCHAR(300) )
+					 
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflow
+  WHERE      runID = p_runID AND optimaName = p_optima;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflow
+      SET      expAborted = 'YES', statusID = p_statusID
       WHERE    runID = p_runID AND optimaName = p_optima;
 
     END IF;
@@ -1392,6 +1663,62 @@ BEGIN
 END$$
 
 
+-- Update and return status of the REPORT while trying to save GMP Report into DB ---
+DROP PROCEDURE IF EXISTS autoflow_report_status$$
+CREATE PROCEDURE autoflow_report_status ( p_personGUID CHAR(36),
+                                 	  p_password   VARCHAR(80),
+                                          p_id  INT )
+
+  -- RETURNS INT
+  MODIFIES SQL DATA
+  
+BEGIN
+  DECLARE current_status TEXT;
+  DECLARE unique_start TINYINT DEFAULT 0;
+       
+
+  DECLARE exit handler for sqlexception
+   BEGIN
+      -- ERROR
+    ROLLBACK;
+   END;
+   
+  DECLARE exit handler for sqlwarning
+   BEGIN
+     -- WARNING
+    ROLLBACK;
+   END;
+
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+
+  START TRANSACTION;
+  
+  SELECT     reporting
+  INTO       current_status
+  FROM       autoflowStages
+  WHERE      autoflowID = p_id FOR UPDATE;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( current_status = 'unknown' ) THEN
+      UPDATE  autoflowStages
+      SET     reporting = 'STARTED'
+      WHERE   autoflowID = p_id;
+
+      SET unique_start = 1;
+
+    END IF;
+
+  END IF;
+
+  SELECT unique_start as status;
+  -- RETURN (unique_start);
+  COMMIT;
+
+END$$
 
 
 
@@ -1793,7 +2120,8 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   channelName, totalConc, rmsdLimit, avIntensity, expDuration, wavelength, totalConcTol, expDurationTol, reportMaskJson
+      SELECT   channelName, totalConc, rmsdLimit, avIntensity, expDuration, wavelength,
+      	       totalConcTol, expDurationTol, reportMaskJson, tripleDropped
       FROM     autoflowReport 
       WHERE    reportID = p_reportID;
 
@@ -2004,7 +2332,9 @@ BEGIN
   SELECT     requestID
   INTO       autoAnalID
   FROM       autoflowAnalysisHistory
-  WHERE      autoflowID = p_autoflowID AND tripleName = p_triplename;
+  WHERE      autoflowID = p_autoflowID AND tripleName = p_triplename
+  ORDER BY   requestID
+  DESC LIMIT 1;
 
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     IF ( autoAnalID = 0 ) THEN
@@ -2068,6 +2398,273 @@ BEGIN
   RETURN( record_id );
 
 END$$
+
+
+--- Create record in the autoflowStatus table via importRI && importIP for ProtDEv module ------------------------
+
+DROP FUNCTION IF EXISTS new_autoflowStatusRI_IP_dev_record$$
+CREATE FUNCTION new_autoflowStatusRI_IP_dev_record ( p_personGUID CHAR(36),
+                                      	      	   p_password   VARCHAR(80),
+					      	   p_autoflowID int(11),
+					      	   p_RIJson TEXT,
+						   p_RIts   TEXT,
+						   p_IPJson TEXT,
+						   p_IPts   TEXT )
+                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowStatus SET
+      autoflowID        = p_autoflowID,
+      importRI          = p_RIJson,
+      importRIts        = p_RIts,
+      importIP          = p_IPJson,
+      importIPts        = p_IPts;
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+--- Create record in the autoflowStatus table via importRI for ProtDEv module ------------------------
+
+DROP FUNCTION IF EXISTS new_autoflowStatusRI_dev_record$$
+CREATE FUNCTION new_autoflowStatusRI_dev_record ( p_personGUID CHAR(36),
+                                      	      	   p_password   VARCHAR(80),
+					      	   p_autoflowID int(11),
+					      	   p_RIJson TEXT,
+						   p_RIts   TEXT)
+						                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowStatus SET
+      autoflowID        = p_autoflowID,
+      importRI          = p_RIJson,
+      importRIts        = p_RIts;
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+--- Create record in the autoflowStatus table via importIP for ProtDEv module ------------------------
+
+DROP FUNCTION IF EXISTS new_autoflowStatusIP_dev_record$$
+CREATE FUNCTION new_autoflowStatusIP_dev_record ( p_personGUID CHAR(36),
+                                      	      	   p_password   VARCHAR(80),
+					      	   p_autoflowID int(11),
+					      	   p_IPJson TEXT,
+						   p_IPts   TEXT)
+						                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowStatus SET
+      autoflowID        = p_autoflowID,
+      importIP          = p_IPJson,
+      importIPts        = p_IPts;
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+
+--- Create record in the autoflowStatus table via LIVE_UPDATE's STOP Optima event--------------
+
+DROP FUNCTION IF EXISTS new_autoflowStatusStopOptima_record$$
+CREATE FUNCTION new_autoflowStatusStopOptima_record ( p_personGUID CHAR(36),
+                                      	      	    p_password   VARCHAR(80),
+					      	    p_autoflowID int(11),
+					      	    p_stopOptimaJson TEXT )
+                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowStatus SET
+      autoflowID        = p_autoflowID,
+      stopOptima        = p_stopOptimaJson,
+      stopOptimats      = NOW();
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+
+--- Create record in the autoflowStatus table via LIVE_UPDATE's SKIP Optima event--------------
+
+DROP FUNCTION IF EXISTS new_autoflowStatusSkipOptima_record$$
+CREATE FUNCTION new_autoflowStatusSkipOptima_record ( p_personGUID CHAR(36),
+                                      	      	    p_password   VARCHAR(80),
+					      	    p_autoflowID int(11),
+					      	    p_skipOptimaJson TEXT )
+                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowStatus SET
+      autoflowID        = p_autoflowID,
+      skipOptima        = p_skipOptimaJson,
+      skipOptimats      = NOW();
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+
+
+-- Update record in the autoflowStatus table via LIVE_UPDATE's STOP Optima event --------------
+
+DROP PROCEDURE IF EXISTS update_autoflowStatusStopOptima_record$$
+CREATE PROCEDURE update_autoflowStatusStopOptima_record ( p_personGUID    CHAR(36),
+                                             	  	p_password        VARCHAR(80),
+                                       	     	  	p_ID    	  INT,
+					  	  	p_autoflowID      INT,
+                                                  	p_stopOptimaJson  TEXT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowStatus
+  WHERE      ID = p_ID AND autoflowID = p_autoflowID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowStatus
+      SET      stopOptima  = p_stopOptimaJson, stopOptimats = NOW()
+      WHERE    ID = p_ID AND autoflowID = p_autoflowID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
+-- Update record in the autoflowStatus table via LIVE_UPDATE's SKIP Optima event --------------
+
+DROP PROCEDURE IF EXISTS update_autoflowStatusSkipOptima_record$$
+CREATE PROCEDURE update_autoflowStatusSkipOptima_record ( p_personGUID    CHAR(36),
+                                             	  	  p_password        VARCHAR(80),
+                                       	     	  	  p_ID    	  INT,
+					  	  	  p_autoflowID      INT,
+                                                  	  p_skipOptimaJson  TEXT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowStatus
+  WHERE      ID = p_ID AND autoflowID = p_autoflowID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowStatus
+      SET      skipOptima  = p_skipOptimaJson, skipOptimats = NOW()
+      WHERE    ID = p_ID AND autoflowID = p_autoflowID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
 
 --- Create record in the autoflowStatus table via importRI ------------------------
 
@@ -2137,6 +2734,9 @@ BEGIN
   RETURN( record_id );
 
 END$$
+
+
+
 
 
 -- Update autoflowStatus record via importRI
@@ -2300,9 +2900,173 @@ END$$
 
 
 
+-- Update autoflowStatus record via GMPreport
+DROP PROCEDURE IF EXISTS update_autoflowStatusReport_record$$
+CREATE PROCEDURE update_autoflowStatusReport_record ( p_personGUID    CHAR(36),
+                                             	      p_password      VARCHAR(80),
+                                       	     	      p_ID    	      INT,
+					  	      p_autoflowID    INT,
+                                                      p_reportJson    TEXT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowStatus
+  WHERE      ID = p_ID AND autoflowID = p_autoflowID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowStatus
+      SET      GMPreport = p_IPJson, GMPreportts = NOW()
+      WHERE    ID = p_ID AND autoflowID = p_autoflowID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
 -- Update autoflowStatus record via analysis FITMEN
 DROP PROCEDURE IF EXISTS update_autoflowStatusAnalysisFitmen_record$$
 CREATE PROCEDURE update_autoflowStatusAnalysisFitmen_record ( p_personGUID    CHAR(36),
+                                             	            p_password      VARCHAR(80),
+                                       	     	            p_ID    	      INT,
+					  	            p_autoflowID      INT,
+                                                            p_AnalysisTriple  TEXT,
+                                                            p_AnalysisAction  TEXT )
+
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+  DECLARE analysis_json TEXT;
+  DECLARE p_AnalysisAction_plus_date TEXT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowStatus
+  WHERE      ID = p_ID AND autoflowID = p_autoflowID;
+
+  SELECT     analysis
+  INTO       analysis_json
+  FROM       autoflowStatus
+  WHERE     ID = p_ID AND autoflowID = p_autoflowID;
+  
+  SELECT concat( p_AnalysisAction, '; ', DATE_FORMAT(NOW(), '%Y-%m-%d %h:%i:%s'))
+  INTO   p_AnalysisAction_plus_date;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      IF ( analysis_json IS NULL ) THEN 
+        UPDATE   autoflowStatus
+        SET      analysis  = JSON_OBJECT(p_AnalysisTriple, p_AnalysisAction_plus_date)
+        WHERE    ID = p_ID AND autoflowID = p_autoflowID;
+
+      ELSE
+         UPDATE  autoflowStatus
+         SET     analysis = JSON_ARRAY_APPEND(analysis, '$', JSON_OBJECT(p_AnalysisTriple, p_AnalysisAction_plus_date))
+         WHERE   ID = p_ID AND autoflowID = p_autoflowID;
+
+      END IF;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
+-- Update autoflowStatus record via analysis CANCEL Job
+DROP PROCEDURE IF EXISTS update_autoflowStatusAnalysisCancel_record$$
+CREATE PROCEDURE update_autoflowStatusAnalysisCancel_record ( p_personGUID    CHAR(36),
+                                             	            p_password      VARCHAR(80),
+                                       	     	            p_ID    	      INT,
+					  	            p_autoflowID      INT,
+                                                            p_CancelTriples   TEXT,
+                                                            p_CancelAction    TEXT )
+
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+  DECLARE analysisCancel_json TEXT;
+  DECLARE p_CancelAction_plus_date TEXT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowStatus
+  WHERE      ID = p_ID AND autoflowID = p_autoflowID;
+
+  SELECT     analysisCancel
+  INTO       analysisCancel_json
+  FROM       autoflowStatus
+  WHERE     ID = p_ID AND autoflowID = p_autoflowID;
+  
+  SELECT concat( p_CancelAction, '; ', DATE_FORMAT(NOW(), '%Y-%m-%d %h:%i:%s'))
+  INTO   p_CancelAction_plus_date;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      IF ( analysisCancel_json IS NULL ) THEN 
+        UPDATE   autoflowStatus
+        SET      analysisCancel  = JSON_OBJECT(p_CancelTriples, p_CancelAction_plus_date)
+        WHERE    ID = p_ID AND autoflowID = p_autoflowID;
+
+      ELSE
+         UPDATE  autoflowStatus
+         SET     analysisCancel = JSON_ARRAY_APPEND(analysisCancel, '$', JSON_OBJECT(p_CancelTriples, p_CancelAction_plus_date))
+         WHERE   ID = p_ID AND autoflowID = p_autoflowID;
+
+      END IF;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+
+
+-- [OLD] Update autoflowStatus record via analysis FITMEN
+DROP PROCEDURE IF EXISTS update_autoflowStatusAnalysisFitmen_record_old$$
+CREATE PROCEDURE update_autoflowStatusAnalysisFitmen_record_old ( p_personGUID    CHAR(36),
                                              	            p_password      VARCHAR(80),
                                        	     	            p_ID    	      INT,
 					  	            p_autoflowID      INT,
@@ -2328,8 +3092,8 @@ BEGIN
   SELECT     analysis
   INTO       analysis_json
   FROM       autoflowStatus
-  WHERE     ID = p_ID AND autoflowID = p_autoflowID; 
-
+  WHERE     ID = p_ID AND autoflowID = p_autoflowID;
+  
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     IF ( count_records = 0 ) THEN
       SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
@@ -2355,6 +3119,7 @@ BEGIN
   SELECT @US3_LAST_ERRNO AS status;
 
 END$$
+
 
 
 -- Returns complete information about autoflowStatus record
@@ -2387,7 +3152,9 @@ BEGIN
       SELECT @OK AS status;
 
       SELECT   importRI, importRIts, importIP, importIPts,
-               editRI, editRIts, editIP, editIPts, analysis
+               editRI, editRIts, editIP, editIPts, analysis,
+	       stopOptima, stopOptimats, skipOptima, skipOptimats,
+	       analysisCancel
       FROM     autoflowStatus 
       WHERE    ID = p_ID;
 
@@ -2899,5 +3666,495 @@ BEGIN
   END IF;
 
   SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- set_table_auto_increment procedure --
+DROP PROCEDURE IF EXISTS set_table_auto_increment$$
+CREATE PROCEDURE  set_table_auto_increment( p_personGUID CHAR(36),
+                                            p_password   VARCHAR(80),
+                                            p_current_db VARCHAR(255) )
+    MODIFIES SQL DATA
+
+BEGIN
+  DECLARE max_id_table_history INT DEFAULT 0;
+  DECLARE max_id_table         INT DEFAULT 0;
+  DECLARE table_auto_increment INT DEFAULT 0;
+  DECLARE greatest_value       INT DEFAULT 0;
+
+  DECLARE exit handler for sqlexception
+   BEGIN
+      
+    ROLLBACK;
+   END;
+   
+  DECLARE exit handler for sqlwarning
+   BEGIN
+     
+    ROLLBACK;
+   END;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SET @db_name            = p_current_db;
+
+  START TRANSACTION;
+
+  SELECT @autoinc := `AUTO_INCREMENT` FROM  INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = @db_name AND TABLE_NAME = 'autoflow';
+  SELECT @new_autoinc := GREATEST( MAX( ID ) + 1, @autoinc ) FROM autoflowHistory;
+  SET @sql = CONCAT('ALTER TABLE autoflow AUTO_INCREMENT = ', @new_autoinc);
+  PREPARE st FROM @sql;
+  EXECUTE st;     
+  
+  COMMIT;
+
+END$$
+
+
+------------------------------------------------------------------------------
+---- GMP Report --------------------------------------------------------------
+
+-- add new autoflowGMPreport record
+DROP PROCEDURE IF EXISTS new_autoflow_gmp_report_record$$
+CREATE PROCEDURE new_autoflow_gmp_report_record ( p_personGUID   CHAR(36),
+                                    		 p_password      VARCHAR(80),
+                                     		 p_autoflowHID   INT,
+                                     		 p_autoflowHName VARCHAR(300),
+						 p_protocolName  VARCHAR(80),
+						 p_filenamepdf   VARCHAR(300) )
+                                                        
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE duplicate_key TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR 1062
+    SET duplicate_key = 1;
+	
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowGMPReport SET
+      autoflowHistoryID   = p_autoflowHID,
+      autoflowHistoryName = p_autoflowHName,
+      protocolName        = p_protocolName,
+      timeCreated         = NOW(),
+      fileNamePdf         = p_filenamepdf;
+      
+    IF ( duplicate_key = 1 ) THEN
+      SET @US3_LAST_ERRNO = @INSERTDUP;
+      SET @US3_LAST_ERROR = "MySQL: Duplicate entry for autoflowHistoryID field(s)";
+
+    ELSE
+      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+    END IF; 
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- UPDATEs the blob data of the autoflowGMPRecord table
+DROP PROCEDURE IF EXISTS upload_gmpReportData$$
+CREATE PROCEDURE  upload_gmpReportData( p_personGUID   CHAR(36),
+                                        p_password     VARCHAR(80),
+                                        p_gmpReportID  INT,
+                                        p_data         LONGBLOB,
+                                        p_checksum     CHAR(33) )
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE l_checksum     CHAR(33);
+  DECLARE not_found      TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR NOT FOUND
+    SET not_found = 1;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+ 
+  -- Compare checksum with calculated checksum
+  SET l_checksum = MD5( p_data );
+  SET @DEBUG = CONCAT( l_checksum , ' ', p_checksum );
+
+  IF ( l_checksum != p_checksum ) THEN
+  
+    -- Checksums don't match; abort
+    SET @US3_LAST_ERRNO = @BAD_CHECKSUM;
+    SET @US3_LAST_ERROR = "MySQL: Transmission error, bad checksum";
+
+  ELSEIF ( verify_userlevel( p_personGUID, p_password, @US3_ANALYST ) = @OK ) THEN
+
+    -- Since this is autoflow framework, any user of level >=2 can initiate: 
+    UPDATE autoflowGMPReport SET
+   	  data  = p_data
+    WHERE  ID = p_gmpReportID;
+
+    IF ( not_found = 1 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = "MySQL: No GMP Report data with that ID exists";
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- SELECTs the blob data of the autoflowGMPReport table
+DROP PROCEDURE IF EXISTS download_gmpReportData$$
+CREATE PROCEDURE download_gmpReportData ( p_personGUID   CHAR(36),
+                                          p_password     VARCHAR(80),
+                                          p_gmpReportID  INT )
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_count_GMPReportData INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+ 
+  -- Get information to verify that there are records
+  SELECT COUNT(*)
+  INTO   l_count_GMPReportData
+  FROM   autoflowGMPReport
+  WHERE  ID = p_gmpReportID;
+
+  IF ( l_count_GMPReportData != 1 ) THEN
+    -- Probably no rows
+    SET @US3_LAST_ERRNO = @NOROWS;
+    SET @US3_LAST_ERROR = 'MySQL: no rows exist with that ID (or too many rows)';
+
+    SELECT @NOROWS AS status;
+    
+  ELSEIF ( verify_userlevel( p_personGUID, p_password, @US3_ANALYST ) != @OK ) THEN
+ 
+    -- verify_user_permission
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+
+    SELECT @OK AS status;
+
+    SELECT data, MD5( data )
+    FROM   autoflowGMPReport
+    WHERE  ID = p_gmpReportID;
+
+  END IF;
+
+END$$
+
+-- UPDATEs to clear a record from the autoflowGMPReport table
+DROP PROCEDURE IF EXISTS clear_autoflowGMPReportRecord$$
+CREATE PROCEDURE clear_autoflowGMPReportRecord ( p_personGUID   CHAR(36),
+                                               p_password       VARCHAR(80),
+                                               p_gmpReportID    INT )
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE l_count_GMPReportData INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+ 
+  -- Get information to verify that there are records
+  SELECT COUNT(*)
+  INTO   l_count_GMPReportData
+  FROM   autoflowGMPReport
+  WHERE  ID = p_gmpReportID;
+
+SET @DEBUG = CONCAT('Reference Scan ID = ', p_gmpReportID,
+                    'Count = ', l_count_GMPReportData );
+
+  IF ( l_count_GMPReportData != 1 ) THEN
+    -- Probably no rows
+    SET @US3_LAST_ERRNO =  @NO_AUTOFLOW_RECORD;
+    SET @US3_LAST_ERROR = 'MySQL: no rows exist with that ID (or too many rows)';
+
+    SELECT @NOROWS AS status;
+    
+  ELSEIF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) != @OK ) THEN
+ 
+    -- verify_user_permission
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+
+    SELECT @OK AS status;
+
+    DELETE FROM autoflowGMPReport
+    WHERE ID = p_gmpReportID ;
+
+  END IF;
+
+END$$
+
+
+-- Returns information about autoflowGMPReport records for listing
+DROP PROCEDURE IF EXISTS get_autoflowGMPReport_desc$$
+CREATE PROCEDURE  get_autoflowGMPReport_desc( p_personGUID    CHAR(36),
+                                       	      p_password      VARCHAR(80) )
+                                     
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowGMPReport;
+
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   ID, autoflowHistoryID, autoflowHistoryName, protocolName,
+      	       timeCreated, fileNamePdf
+      FROM     autoflowGMPReport;
+     
+    END IF;
+
+  ELSE
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END IF;
+
+END$$
+
+
+---------------------------------------------------------------------------------------------
+--- e-Signatures related --------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+
+----- Returns complete information about autoflowGMPReportEsign record by autoflowID
+DROP PROCEDURE IF EXISTS get_gmp_review_info_by_autoflowID$$
+CREATE PROCEDURE get_gmp_review_info_by_autoflowID( p_personGUID    CHAR(36),
+                                       		    p_password      VARCHAR(80),
+                                       		    p_ID            INT )
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowGMPReportEsign
+  WHERE      autoflowID = p_ID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NOROWS;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   ID, autoflowID, autoflowName, operatorListJson, reviewersListJson,
+      	       eSignStatusJson, eSignStatusAll, createUpdateLogJson
+      FROM     autoflowGMPReportEsign
+      WHERE    autoflowID = p_ID;
+
+    END IF;
+
+  ELSE
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END IF;
+
+END$$
+
+----- new autoflowGMPReportEsign record ---------------------------------
+DROP FUNCTION IF EXISTS new_gmp_review_record$$
+CREATE FUNCTION  new_gmp_review_record ( p_personGUID   CHAR(36),
+                                      	 p_password     VARCHAR(80),
+					 p_autoflowID   INT(11),
+					 p_autoflowName TEXT,
+					 p_operListJson TEXT,
+					 p_revListJson  TEXT,
+					 p_eSignJson    TEXT,
+					 p_logJson      TEXT )
+                                       
+  RETURNS INT
+  MODIFIES SQL DATA
+
+BEGIN
+
+  DECLARE record_id INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    INSERT INTO autoflowGMPReportEsign SET
+       autoflowID          = p_autoflowID,
+       autoflowName        = p_autoflowName,
+       operatorListJson    = p_operListJson,
+       reviewersListJson   = p_revListJson,
+       eSignStatusJson     = p_eSignJson,
+       createUpdateLogJson = p_logJson;
+     
+    SELECT LAST_INSERT_ID() INTO record_id;
+
+  END IF;
+
+  RETURN( record_id );
+
+END$$
+
+
+-- Update autoflowGMPReportEsign record by ADMIN assigner
+DROP PROCEDURE IF EXISTS update_gmp_review_record_by_admin$$
+CREATE PROCEDURE update_gmp_review_record_by_admin ( p_personGUID  CHAR(36),
+                                             	     p_password      VARCHAR(80),
+                                       	     	     p_eSignID       INT,
+					  	     p_autoflowID    INT,
+						     p_operListJson  TEXT,
+                                                     p_revListJson   TEXT,
+						     p_logJson       TEXT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowGMPReportEsign
+  WHERE      ID = p_eSignID AND autoflowID = p_autoflowID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowGMPReportEsign
+      SET      operatorListJson = p_operListJson,
+      	       reviewersListJson = p_revListJson,
+	       createUpdateLogJson = p_logJson
+      WHERE    ID = p_eSignID AND autoflowID = p_autoflowID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- Update autoflowGMPReportEsign record by e-Signer
+DROP PROCEDURE IF EXISTS update_gmp_review_record_by_esigner$$
+CREATE PROCEDURE update_gmp_review_record_by_esigner ( p_personGUID  CHAR(36),
+                                             	     p_password      VARCHAR(80),
+                                       	     	     p_eSignID       INT,
+					  	     p_autoflowID    INT,
+                                                     p_eSignJson     TEXT,
+						     p_eSignAll      TEXT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflowGMPReportEsign
+  WHERE      ID = p_eSignID AND autoflowID = p_autoflowID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_AUTOFLOW_RECORD;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+    ELSE
+      UPDATE   autoflowGMPReportEsign
+      SET      eSignStatusJson = p_eSignJson, eSignStatusAll = p_eSignAll
+      WHERE    ID = p_eSignID AND autoflowID = p_autoflowID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+
+-- Update autoflow's 'gmpReviewID' with the newly returned e-Signature ID
+DROP PROCEDURE IF EXISTS update_autoflow_with_gmpReviewID$$
+CREATE PROCEDURE update_autoflow_with_gmpReviewID ( p_personGUID   CHAR(36),
+                                             	  p_password       VARCHAR(80),
+                                       	     	  p_ID		   INT,
+					  	  p_gmpReviewID    INT )
+  MODIFIES SQL DATA  
+
+BEGIN
+  DECLARE count_records INT;
+  DECLARE count_records_history INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_records
+  FROM       autoflow
+  WHERE      ID = p_ID;
+
+  SELECT     COUNT(*)
+  INTO       count_records_history
+  FROM       autoflowHistory
+  WHERE      ID = p_ID; 
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_records != 0 ) THEN
+      UPDATE   autoflow
+      SET      gmpReviewID = p_gmpReviewID
+      WHERE    ID = p_ID;
+   END IF;    
+      
+   IF ( count_records_history != 0 ) THEN
+      UPDATE   autoflowHistory
+      SET      gmpReviewID = p_gmpReviewID
+      WHERE    ID = p_ID;            
+   END IF;
+
+  END IF;
 
 END$$

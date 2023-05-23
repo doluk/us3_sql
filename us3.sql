@@ -36,6 +36,7 @@ CREATE  TABLE IF NOT EXISTS people (
   clusterAuthorizations VARCHAR(255) NOT NULL default 'lonestar5:stampede2:comet:jetstream',
   userlevel TINYINT NOT NULL DEFAULT 0 ,
   advancelevel TINYINT NOT NULL DEFAULT 0 ,
+  gmpReviewer TINYINT(1) NOT NULL DEFAULT false ,
   PRIMARY KEY (personID) )
 ENGINE = InnoDB;
 
@@ -94,7 +95,7 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   runName varchar(300) NULL,
   expID  int(10) NULL,
   runID  int(10) NULL,
-  status enum('LIVE_UPDATE','EDITING','EDIT_DATA','ANALYSIS','REPORT') NOT NULL,
+  status enum('LIVE_UPDATE','EDITING','EDIT_DATA','ANALYSIS','REPORT','E-SIGNATURES') NOT NULL,
   dataPath varchar(300) NULL,
   optimaName varchar(300) NULL,
   runStarted TIMESTAMP NULL,
@@ -111,6 +112,8 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   operatorID  int(11) NULL,
   statusID    int(11) NULL,
   failedID    int(11) NULL,
+  devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
+  gmpReviewID int(11) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -131,7 +134,7 @@ CREATE  TABLE IF NOT EXISTS autoflowHistory (
   runName varchar(300) NULL,
   expID  int(10) NULL,
   runID  int(10) NULL,
-  status enum('LIVE_UPDATE','EDITING','EDIT_DATA','ANALYSIS','REPORT') NOT NULL,
+  status enum('LIVE_UPDATE','EDITING','EDIT_DATA','ANALYSIS','REPORT','E-SIGNATURES') NOT NULL,
   dataPath varchar(300) NULL,
   optimaName varchar(300) NULL,
   runStarted TIMESTAMP NULL,
@@ -148,9 +151,44 @@ CREATE  TABLE IF NOT EXISTS autoflowHistory (
   operatorID  int(11) NULL,
   statusID    int(11) NULL,
   failedID    int(11) NULL,
+  devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
+  gmpReviewID int(11) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table autoflowGMPReport
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS autoflowGMPReport;
+CREATE TABLE IF NOT EXISTS autoflowGMPReport (
+  ID INT(11) NOT NULL AUTO_INCREMENT,
+  autoflowHistoryID   INT(11) NOT NULL UNIQUE,
+  autoflowHistoryName VARCHAR(300) NULL,
+  protocolName        VARCHAR(80) NULL,
+  timeCreated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  data                LONGBLOB NULL,
+  fileNamePdf 	      VARCHAR(300) NULL,
+  PRIMARY KEY (ID) )
+ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table autoflowGMPReportEsign
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS autoflowGMPReportEsign;
+CREATE TABLE IF NOT EXISTS autoflowGMPReportEsign (
+  ID                   INT(11)   NOT NULL AUTO_INCREMENT,
+  autoflowID           INT(11)   NOT NULL UNIQUE,
+  autoflowName         VARCHAR(300)  NULL,
+  operatorListJson     json,
+  reviewersListJson    json,
+  eSignStatusJson      json,
+  eSignStatusAll       ENUM ('NO','YES') NOT NULL,
+  createUpdateLogJson  json,
+  PRIMARY KEY (ID) )
+ENGINE = InnoDB; 
 
 
 -----------------------------------------------------
@@ -186,7 +224,14 @@ CREATE TABLE autoflowStatus (
   editIP            json,
   editIPts          timestamp    NULL,
   analysis          json,
-
+  GMPreport   	    json,
+  GMPreportts       timestamp 	 NULL,
+  stopOptima        json,
+  stopOptimats      timestamp 	 NULL,
+  skipOptima        json,
+  skipOptimats      timestamp 	 NULL,
+  analysisCancel    json,
+  
   PRIMARY KEY (ID) )
   ENGINE=InnoDB;
 
@@ -274,6 +319,7 @@ CREATE TABLE autoflowStages (
   liveUpdate        text         DEFAULT "unknown",
   import            text         DEFAULT "unknown",
   editing           text         DEFAULT "unknown",
+  reporting         text         DEFAULT "unknown",
 
   PRIMARY KEY (autoflowID)
   ) ENGINE=InnoDB;
