@@ -743,7 +743,8 @@ CREATE PROCEDURE add_cosed_component ( p_personGUID    CHAR(36),
                                         p_d_coeff       FLOAT,
                                         p_overlaying    TINYINT(1),
                                         p_density       TEXT,
-                                        p_viscosity     TEXT)
+                                        p_viscosity     TEXT,
+                                        p_vbar          FLOAT)
   MODIFIES SQL DATA
 
 BEGIN
@@ -776,7 +777,8 @@ BEGIN
         d_value           = p_d_coeff,
         overlaying        = p_overlaying,
         density           = p_density,
-        viscosity         = p_viscosity;
+        viscosity         = p_viscosity,
+        vbar              = p_vbar;
 
       SET @LAST_INSERT_ID = LAST_INSERT_ID();
 
@@ -800,7 +802,8 @@ CREATE PROCEDURE update_cosed_component ( p_personGUID    CHAR(36),
                                         p_d_coeff       FLOAT,
                                         p_overlaying    TINYINT(1),
                                         p_density       TEXT,
-                                        p_viscosity     TEXT)
+                                        p_viscosity     TEXT,
+                                        p_vbar          FLOAT)
   MODIFIES SQL DATA
 
 BEGIN
@@ -821,7 +824,8 @@ BEGIN
       d_value         = p_d_coeff,
       density         = p_density,
       viscosity       = p_viscosity,
-      overlaying      = p_overlaying
+      overlaying      = p_overlaying,
+      vbar            = p_vbar
     WHERE bufferID    = p_bufferID and
      cosedComponentID = p_cosedID;
 
@@ -927,7 +931,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying
+      SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying, vbar
       FROM     buffercosedlink l
       WHERE    bufferID = p_bufferID
       ORDER BY name;
