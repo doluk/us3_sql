@@ -660,7 +660,7 @@ BEGIN
     ELSE
       SELECT @OK AS status;
 
-      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, cosedComponentGUID
+      SELECT   name, concentration, s_value, d_value, density, viscosity, overlaying, cosedComponentGUID, vbar
       FROM     buffercosedLink
       WHERE    cosedComponentID = p_componentID;
 
