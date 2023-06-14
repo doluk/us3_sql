@@ -1037,6 +1037,7 @@ CREATE  TABLE IF NOT EXISTS buffercosedLink (
   density TEXT NULL DEFAULT NULL,
   viscosity TEXT NULL DEFAULT NULL,
   overlaying TINYINT(1) NOT NULL DEFAULT 0,
+  vbar FLOAT DEFAULT NULL,
   INDEX ndx_bufferLink_bufferID (bufferID ASC) ,
   CONSTRAINT fk_buffercosedLink_bufferID
     FOREIGN KEY (bufferID )
