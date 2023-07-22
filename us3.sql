@@ -663,20 +663,47 @@ DROP TABLE IF EXISTS abstractChannel ;
 
 CREATE  TABLE IF NOT EXISTS abstractChannel (
   abstractChannelID int(11) NOT NULL AUTO_INCREMENT ,
-  channelType enum('reference','sample') NULL ,
-  channelShape enum( 'sector', 'rectangular' ) NULL ,
+  abstractCenterpieceID int ,
   abstractChannelGUID CHAR(36) NULL ,
   name VARCHAR(100) NULL ,
-  number INT NULL ,
-  radialBegin FLOAT NULL ,
-  radialEnd FLOAT NULL ,
-  degreesWide FLOAT NULL ,
-  degreesOffset FLOAT NULL ,
-  radialBandTop FLOAT NULL ,
-  radialBandBottom FLOAT NULL ,
-  radialMeniscusPos FLOAT NULL ,
-  dateUpdated DATE NULL ,
-  PRIMARY KEY (abstractChannelID) )
+  bottom FLOAT NOT NULL ,
+  shape enum( 'standard', 'rectangular', 'circular', 'synthetic',
+              'band forming', 'meniscus matching', 'sector' )
+              NOT NULL DEFAULT 'standard',
+  pathLength FLOAT NULL ,
+  angle FLOAT NULL ,
+  width FLOAT NULL ,
+  dataUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP ,
+  PRIMARY KEY (abstractChannelID) ,
+  CONSTRAINT fk_abstractCenterpieceID
+    FOREIGN KEY (abstractCenterpieceID )
+    REFERENCES abstractCenterpiece (abstractCenterpieceID )
+    ON DELETE SET NULL
+    ON UPDATE CASCADE)
+ENGINE = InnoDB;
+
+-- -----------------------------------------------------
+-- Table abstractCenterpiecePerson
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS abstractCenterpiecePerson ;
+
+CREATE  TABLE IF NOT EXISTS abstractCenterpiecePerson (
+  abstractCenterpieceID int(11) NOT NULL ,
+  personID int(11) NOT NULL ,
+  private TINYINT NOT NULL DEFAULT 1,
+  PRIMARY KEY (abstractCenterpieceID, personID) ,
+  INDEX ndx_abstractCenterpiecePerson_personID  (personID ASC) ,
+  INDEX ndx_abstractCenterpiecePerson_abstractCenterpieceID (abstractCenterpieceID ASC) ,
+  CONSTRAINT fk_abstractCenterpiecePerson_personID
+    FOREIGN KEY (personID )
+    REFERENCES people (personID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE,
+  CONSTRAINT fk_abstractCenterpiecePerson_analyteID
+    FOREIGN KEY (abstractCenterpieceID )
+    REFERENCES abstractCenterpiece (abstractCenterpieceID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE)
 ENGINE = InnoDB;
 
 

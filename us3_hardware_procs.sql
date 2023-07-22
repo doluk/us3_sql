@@ -1337,6 +1337,176 @@ BEGIN
 
 END$$
 
+-- adds a new centerpiece
+DROP PROCEDURE IF EXISTS add_centerpiece$$
+CREATE PROCEDURE add_centerpiece ( p_personGUID    CHAR(36),
+                                  p_password      VARCHAR(80),
+                                  p_GUID          CHAR(36),
+                                  p_name          TEXT,
+                                  p_material      TEXT,
+                                  p_loadMethod    TEXT,
+                                  p_channels      INT,
+                                  p_bottom        VARCHAR(20),
+                                  p_shape         TEXT,
+                                  p_maxRPM        INT,
+                                  p_pathLength    FLOAT,
+                                  p_angle         FLOAT,
+                                  p_width         FLOAT)
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE duplicate_key TINYINT DEFAULT 0;
+  DECLARE null_field    TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR 1062
+    SET duplicate_key = 1;
+
+  DECLARE CONTINUE HANDLER FOR 1048
+    SET null_field = 1;
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+
+  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    INSERT INTO abstractCenterpiece SET
+      abstractCenterpieceGUID = p_GUID,
+      name              = p_name,
+      materialName      = p_material,
+      loadMethod        = p_loadMethod,
+      channels          = p_channels,
+      bottom            = p_bottom,
+      shape             = p_shape,
+      maxRPM            = p_maxRPM,
+      pathLength        = p_pathLength,
+      angle             = p_angle,
+      width             = p_width,
+      dataUpdated       = NOW();
+
+    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+  END IF;
+
+  IF ( ( verify_user( p_personGUID, p_password ) = @OK ) &&
+       ( check_GUID ( p_personGUID, p_password, p_GUID ) = @OK ) ) THEN
+    INSERT INTO abstractCenterpiece SET
+      abstractCenterpieceGUID = p_GUID,
+      name              = p_name,
+      materialName      = p_material,
+      loadMethod        = p_loadMethod,
+      channels          = p_channels,
+      bottom            = p_bottom,
+      shape             = p_shape,
+      maxRPM            = p_maxRPM,
+      pathLength        = p_pathLength,
+      angle             = p_angle,
+      width             = p_width,
+      dataUpdated       = NOW();
+
+    IF ( duplicate_key = 1 ) THEN
+      SET @US3_LAST_ERRNO = @INSERTDUP;
+      SET @US3_LAST_ERROR = "MySQL: Duplicate entry for centerpieceGUID field";
+
+    ELSEIF ( null_field = 1 ) THEN
+      SET @US3_LAST_ERRNO = @INSERTNULL;
+      SET @US3_LAST_ERROR = "MySQL: NULL value for centerpieceGUID field";
+
+    ELSE
+      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+      INSERT INTO abstractCenterpiecePerson SET
+        abstractCenterpieceID    = @LAST_INSERT_ID,
+        personID    = @US3_ID,
+        private     = 1;
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+-- adds a new channel of a centerpiece
+DROP PROCEDURE IF EXISTS add_channel$$
+CREATE PROCEDURE add_channel ( p_personGUID    CHAR(36),
+                               p_password      VARCHAR(80),
+                               p_centerpieceID         INT,
+                               p_GUID          CHAR(36),
+                               p_name          TEXT,
+                               p_bottom        VARCHAR(20),
+                               p_shape         TEXT,
+                               p_pathLength    FLOAT,
+                               p_angle         FLOAT,
+                               p_width         FLOAT )
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE duplicate_key TINYINT DEFAULT 0;
+  DECLARE null_field    TINYINT DEFAULT 0;
+
+  DECLARE CONTINUE HANDLER FOR 1062
+    SET duplicate_key = 1;
+
+  DECLARE CONTINUE HANDLER FOR 1048
+    SET null_field = 1;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
+
+  IF (verify_centerpiece_permission(p_personGUID, p_password, p_centerpieceID) = @OK ) THEN
+
+      IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+        INSERT INTO abstractChannel SET
+          abstractChannelGUID = p_GUID,
+          name              = p_name,
+          abstractCenterpieceID      = p_centerpieceID,
+          bottom            = p_bottom,
+          shape             = p_shape,
+          pathLength        = p_pathLength,
+          angle             = p_angle,
+          width             = p_width,
+          dataUpdated       = NOW();
+
+        SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+      END IF;
+
+      IF ( ( verify_user( p_personGUID, p_password ) = @OK ) &&
+           ( check_GUID ( p_personGUID, p_password, p_GUID ) = @OK ) ) THEN
+        INSERT INTO abstractChannel SET
+          abstractChannelGUID = p_GUID,
+          name              = p_name,
+          abstractCenterpieceID      = p_centerpieceID,
+          bottom            = p_bottom,
+          shape             = p_shape,
+          pathLength        = p_pathLength,
+          angle             = p_angle,
+          width             = p_width,
+          dataUpdated       = NOW();
+
+        IF ( duplicate_key = 1 ) THEN
+          SET @US3_LAST_ERRNO = @INSERTDUP;
+          SET @US3_LAST_ERROR = "MySQL: Duplicate entry for channelGUID field";
+
+        ELSEIF ( null_field = 1 ) THEN
+          SET @US3_LAST_ERRNO = @INSERTNULL;
+          SET @US3_LAST_ERROR = "MySQL: NULL value for channelGUID field";
+
+        ELSE
+          SET @LAST_INSERT_ID = LAST_INSERT_ID();
+
+        END IF;
+
+      END IF;
+  end if;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
 -- UPDATEs an existing instrument with radial calibration ID information
 DROP PROCEDURE IF EXISTS update_instrument$$
 CREATE PROCEDURE update_instrument ( p_personGUID    CHAR(36),
@@ -1678,6 +1848,49 @@ BEGIN
 
 END$$
 
+-- Returns a more complete list of information about all channels of a centerpiece
+DROP PROCEDURE IF EXISTS get_abstractChannel_info$$
+CREATE PROCEDURE get_abstractChannel_info ( p_personGUID CHAR(36),
+                                                p_password   VARCHAR(80),
+                                                p_abstractCenterpieceID  INT )
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_abstract_channels INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  SELECT     COUNT(*)
+  INTO       count_abstract_channels
+  FROM       abstractChannel
+  WHERE      abstractCenterpieceID = p_abstractCenterpieceID;
+
+  IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( count_abstract_channels = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NOROWS;
+      SET @US3_LAST_ERROR = 'MySQL: no rows returned';
+
+      SELECT @US3_LAST_ERRNO AS status;
+
+    ELSE
+      SELECT @OK AS status;
+
+      SELECT   abstractChannelGUID, name, bottom, shape, pathLength, angle, width
+      FROM     abstractChannel
+      WHERE    abstractCenterpieceID = p_abstractCenterpieceID
+      ORDER BY abstractChannelID;
+
+    END IF;
+
+  ELSE
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END IF;
+
+END$$
+
 
 --
 -- Radial Calibration procedures
@@ -1804,6 +2017,119 @@ BEGIN
     SELECT @US3_LAST_ERRNO AS status;
 
   END IF;
+
+END$$
+
+-- Verifies that the user has permission to access
+--  the specified centerpiece
+DROP FUNCTION IF EXISTS verify_centerpiece_permission$$
+CREATE FUNCTION verify_centerpiece_permission( p_personGUID CHAR(36),
+                                          p_password   VARCHAR(80),
+                                          p_abstractCenterpieceID   INT )
+  RETURNS INT
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_centerpieces     INT;
+  DECLARE count_permissions INT;
+  DECLARE status            INT;
+
+  CALL config();
+  SET status   = @ERROR;
+  SET @US3_LAST_ERROR = 'MySQL: error verifying centerpiece permission';
+
+  SELECT COUNT(*)
+  INTO   count_centerpieces
+  FROM   abstractCenterpiece
+  WHERE  abstractCenterpieceID = p_abstractCenterpieceID;
+
+  SELECT COUNT(*)
+  INTO   count_permissions
+  FROM   abstractCenterpiecePerson
+  WHERE  abstractCenterpieceID = p_abstractCenterpieceID
+  AND    personID = @US3_ID;
+
+  IF ( count_centerpieces = 0 ) THEN
+    SET @US3_LAST_ERRNO = @NO_CENTERPIECE;
+    SET @US3_LAST_ERROR = 'MySQL: the specified centerpiece does not exist';
+
+    SET status = @NO_BUFFER;
+
+  ELSEIF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    SET @US3_LAST_ERRNO = @OK;
+    SET @US3_LAST_ERROR = '';
+
+    SET status = @OK;
+
+  ELSEIF ( ( verify_user( p_personGUID, p_password ) = @OK ) &&
+           ( count_permissions > 0                         ) ) THEN
+    SET @US3_LAST_ERRNO = @OK;
+    SET @US3_LAST_ERROR = '';
+
+    SET status = @OK;
+
+  ELSE
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view or modify this centerpiece';
+
+    SET status = @NOTPERMITTED;
+
+  END IF;
+
+  RETURN( status );
+
+END$$
+
+-- Returns the count of centerpieces associated with p_ID
+--  If p_ID = 0, retrieves count of all centerpieces in db
+DROP FUNCTION IF EXISTS count_centerpieces$$
+CREATE FUNCTION count_centerpieces( p_personGUID CHAR(36),
+                               p_password   VARCHAR(80),
+                               p_ID         INT )
+  RETURNS INT
+  READS SQL DATA
+
+BEGIN
+
+  DECLARE count_centerpieces INT;
+
+  CALL config();
+  SET count_centerpieces = 0;
+
+  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    -- This is an admin; he can get more info
+    IF ( p_ID > 0 ) THEN
+      SELECT COUNT(*)
+      INTO   count_centerpieces
+      FROM   abstractCenterpiecePerson
+      WHERE  personID = p_ID;
+
+    ELSE
+      SELECT COUNT(*)
+      INTO   count_centerpieces
+      FROM   abstractCenterpiecePerson;
+
+    END IF;
+
+  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( (p_ID != 0) && (p_ID != @US3_ID) ) THEN
+      -- Uh oh, can't do that
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view those centerpieces';
+
+    ELSE
+      -- This person is asking about his own buffers
+      -- Ignore p_ID and return user's own
+      SELECT COUNT(*)
+      INTO   count_centerpieces
+      FROM   abstractCenterpiecePerson
+      WHERE  personID = @US3_ID;
+
+    END IF;
+
+  END IF;
+
+  RETURN( count_centerpieces );
 
 END$$
 
