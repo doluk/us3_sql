@@ -3,7 +3,7 @@
 2. run the `cosedimentingComponents.sql`
 3. Check if everything worked with:
 
-    1. `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_NAME like '%cosed%'` -> should return `cosedComponent` & `buffercosedlink`
+    1. `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_NAME like '%cosed%'` -> should return `cosedComponent` & `buffercosedLink`
 
     2. `SELECT count(*) FROM cosedComponent` -> should return `94`
 

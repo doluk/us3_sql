@@ -92,7 +92,7 @@ BEGIN
   IF ( verify_buffer_permission( p_personGUID, p_password, p_bufferID ) = @OK ) THEN
     DELETE FROM bufferLink
     WHERE bufferID = p_bufferID;
-    DELETE FROM buffercosedlink
+    DELETE FROM buffercosedLink
     WHERE bufferID = p_bufferID;
 
   END IF;
@@ -265,7 +265,7 @@ BEGIN
                                    ' exists' );
 
     ELSE
-      INSERT INTO buffercosedlink SET
+      INSERT INTO buffercosedLink SET
         cosedComponentGUID= p_componentGUID,
         bufferID          = p_bufferID,
         name              = p_name,
@@ -311,7 +311,7 @@ BEGIN
        ( ( verify_user( p_personGUID, p_password ) = @OK ) && ! is_private ) ) THEN
     SELECT    COUNT(*)
     INTO      count_components
-    FROM      buffercosedlink
+    FROM      buffercosedLink
     WHERE     bufferID = p_bufferID;
 
     IF ( count_components = 0 ) THEN
@@ -324,7 +324,7 @@ BEGIN
       SELECT @OK AS status;
 
       SELECT   cosedComponentID, name, viscosity, density, concentration, s_value, d_value, overlaying, cosedComponentGUID
-      FROM     buffercosedlink l
+      FROM     buffercosedLink l
       WHERE    bufferID = p_bufferID
       ORDER BY name;
 

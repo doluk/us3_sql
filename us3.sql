@@ -1029,9 +1029,9 @@ ENGINE = InnoDB;
 DROP TABLE IF EXISTS buffercosedLink ;
 
 CREATE  TABLE IF NOT EXISTS buffercosedLink (
-  bufferID int(11) NOT NULL ,
-  cosedComponentGUID CHAR(36) NOT NULL UNIQUE ,
   cosedComponentID int(11) NOT NULL AUTO_INCREMENT ,
+  cosedComponentGUID CHAR(36) NOT NULL UNIQUE ,
+  bufferID int(11) NOT NULL ,
   name TEXT NULL DEFAULT NULL,
   concentration FLOAT NULL,
   s_value FLOAT DEFAULT NULL,
@@ -1040,6 +1040,7 @@ CREATE  TABLE IF NOT EXISTS buffercosedLink (
   viscosity TEXT NULL DEFAULT NULL,
   overlaying TINYINT(1) NOT NULL DEFAULT 0,
   vbar FLOAT DEFAULT NULL,
+  PRIMARY KEY (cosedComponentID),
   INDEX ndx_bufferLink_bufferID (bufferID ASC) ,
   CONSTRAINT fk_buffercosedLink_bufferID
     FOREIGN KEY (bufferID )
