@@ -36,7 +36,9 @@ CREATE  TABLE IF NOT EXISTS people (
   clusterAuthorizations VARCHAR(255) NOT NULL default 'lonestar5:stampede2:comet:jetstream',
   userlevel TINYINT NOT NULL DEFAULT 0 ,
   advancelevel TINYINT NOT NULL DEFAULT 0 ,
-  gmpReviewer TINYINT(1) NOT NULL DEFAULT false ,
+  gmpReviewerRole ENUM ('NONE', 'REVIEWER', 'APPROVER') NOT NULL,
+  authenticatePAM BOOLEAN DEFAULT 0,
+  userNamePAM VARCHAR(63) UNIQUE NOT NULL,
   PRIMARY KEY (personID) )
 ENGINE = InnoDB;
 
@@ -114,6 +116,9 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   failedID    int(11) NULL,
   devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
   gmpReviewID int(11) NULL,
+  expType enum('VELOCITY','ABDE') NOT NULL,
+  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance') NOT NULL DEFAULT 'INSTRUMENT',
+  opticsFailedType varchar(300) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -153,6 +158,9 @@ CREATE  TABLE IF NOT EXISTS autoflowHistory (
   failedID    int(11) NULL,
   devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
   gmpReviewID int(11) NULL,
+  expType enum('VELOCITY','ABDE') NOT NULL,
+  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance') NOT NULL DEFAULT 'INSTRUMENT',
+  opticsFailedType varchar(300) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -170,6 +178,7 @@ CREATE TABLE IF NOT EXISTS autoflowGMPReport (
   timeCreated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   data                LONGBLOB NULL,
   fileNamePdf 	      VARCHAR(300) NULL,
+  html_s              LONGBLOB  NULL,
   PRIMARY KEY (ID) )
 ENGINE = InnoDB;
 
@@ -184,11 +193,33 @@ CREATE TABLE IF NOT EXISTS autoflowGMPReportEsign (
   autoflowName         VARCHAR(300)  NULL,
   operatorListJson     json,
   reviewersListJson    json,
+  approversListJson    json,
+  smeListJson          json,
   eSignStatusJson      json,
   eSignStatusAll       ENUM ('NO','YES') NOT NULL,
   createUpdateLogJson  json,
   data                 LONGBLOB NULL,
   PRIMARY KEY (ID) )
+ENGINE = InnoDB; 
+
+
+-- -----------------------------------------------------
+-- Table autoflowGMPReportEsignHistory
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS autoflowGMPReportEsignHistory;
+CREATE TABLE IF NOT EXISTS autoflowGMPReportEsignHistory (
+  ID                   INT(11)   NOT NULL UNIQUE,
+  autoflowID           INT(11)   NOT NULL UNIQUE,
+  autoflowName         VARCHAR(300)  NULL,
+  operatorListJson     json,
+  reviewersListJson    json,
+  approversListJson    json,
+  smeListJson          json,
+  eSignStatusJson      json,
+  eSignStatusAll       ENUM ('NO','YES') NOT NULL,
+  createUpdateLogJson  json,
+  data                 LONGBLOB NULL,
+PRIMARY KEY (ID) )
 ENGINE = InnoDB; 
 
 
@@ -232,7 +263,9 @@ CREATE TABLE autoflowStatus (
   skipOptima        json,
   skipOptimats      timestamp 	 NULL,
   analysisCancel    json,
-  
+  createdGMPrun     json,
+  createdGMPrunts   timestamp    NULL,
+
   PRIMARY KEY (ID) )
   ENGINE=InnoDB;
 
@@ -387,7 +420,7 @@ CREATE  TABLE IF NOT EXISTS autoflowReportItem (
   reportItemID  int(11) NOT NULL AUTO_INCREMENT ,
   reportGUID    varchar(80) NOT NULL,
   reportID      int(11) NOT NULL,
-  type          enum ('s', 'D', 'f', 'f/f0', 'MW', 'Radius') NOT NULL,
+  type          enum ('s', 'D', 'f', 'f/f0', 'MW', 'Radius', 'vbar', 'Density') NOT NULL,
   method        enum ('2DSA-IT', 'PCSA-SL/DS/IS', '2DSA-MC', 'raw') NOT NULL,
   rangeLow      FLOAT NULL,
   rangeHi       FLOAT NULL,
@@ -395,6 +428,7 @@ CREATE  TABLE IF NOT EXISTS autoflowReportItem (
   tolerance     FLOAT NULL,
   totalPercent  FLOAT NULL,
   combinedPlot  TinyInt(1) NOT NULL DEFAULT 1,
+  indCombinedPlot  TinyInt(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (reportItemID) )
 ENGINE = InnoDB;
 
@@ -761,7 +795,8 @@ CREATE  TABLE IF NOT EXISTS solutionAnalyte (
     FOREIGN KEY (analyteID )
     REFERENCES analyte (analyteID )
     ON DELETE CASCADE
-    ON UPDATE CASCADE)
+    ON UPDATE CASCADE,
+  PRIMARY KEY (solutionID, analyteID))
 ENGINE = InnoDB;
 
 
@@ -995,7 +1030,8 @@ CREATE  TABLE IF NOT EXISTS bufferLink (
     FOREIGN KEY (bufferComponentID )
     REFERENCES bufferComponent (bufferComponentID )
     ON DELETE CASCADE
-    ON UPDATE CASCADE)
+    ON UPDATE CASCADE,
+  PRIMARY KEY (bufferID, bufferComponentID))
 ENGINE = InnoDB;
 
 
@@ -1634,7 +1670,7 @@ CREATE  TABLE IF NOT EXISTS image (
   imageID int(11) NOT NULL AUTO_INCREMENT ,
   imageGUID CHAR(36) NULL ,
   description VARCHAR(80) NOT NULL DEFAULT 'No description was entered for this image' ,
-  gelPicture LONGBLOB NOT NULL ,
+  gelPicture LONGBLOB NULL ,
   filename VARCHAR(255) NOT NULL DEFAULT '',
   date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ,
   PRIMARY KEY (imageID) )
@@ -1657,6 +1693,29 @@ CREATE  TABLE IF NOT EXISTS imagePerson (
     ON DELETE CASCADE
     ON UPDATE CASCADE,
   CONSTRAINT fk_imagePerson_imageID
+    FOREIGN KEY (imageID )
+    REFERENCES image (imageID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE)
+ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table imageProject
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS imageProject ;
+
+CREATE  TABLE IF NOT EXISTS imageProject (
+  imageID int(11) NOT NULL ,
+  projectID int(11) NOT NULL ,
+  INDEX ndx_imageProject_projectID (projectID ASC) ,
+  INDEX ndx_imageProject_imageID (imageID ASC) ,
+  CONSTRAINT fk_imageProject_projectID
+    FOREIGN KEY (projectID )
+    REFERENCES project (projectID )
+    ON DELETE CASCADE
+    ON UPDATE CASCADE,
+  CONSTRAINT fk_imageProject_imageID
     FOREIGN KEY (imageID )
     REFERENCES image (imageID )
     ON DELETE CASCADE
@@ -2226,7 +2285,8 @@ CREATE  TABLE IF NOT EXISTS experimentProtocol (
     FOREIGN KEY (experimentID )
     REFERENCES experiment (experimentID )
     ON DELETE NO ACTION
-    ON UPDATE CASCADE)
+    ON UPDATE CASCADE,
+  PRIMARY KEY (experimentID, protocolID))
 ENGINE = InnoDB;
 
 
