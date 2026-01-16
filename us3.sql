@@ -117,8 +117,9 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
   gmpReviewID int(11) NULL,
   expType enum('VELOCITY','ABDE') NOT NULL,
-  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance') NOT NULL DEFAULT 'INSTRUMENT',
+  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance','dataDiskAUC:PseudoAbsorbance') NOT NULL DEFAULT 'INSTRUMENT',
   opticsFailedType varchar(300) NULL,
+  filenameProtDevDataDisk varchar(300) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -159,8 +160,9 @@ CREATE  TABLE IF NOT EXISTS autoflowHistory (
   devRecord   enum('NO', 'YES', 'Processed') NOT NULL,
   gmpReviewID int(11) NULL,
   expType enum('VELOCITY','ABDE') NOT NULL,
-  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance') NOT NULL DEFAULT 'INSTRUMENT',
+  dataSource enum ('INSTRUMENT','dataDiskAUC','dataDiskAUC:Absorbance','dataDiskAUC:PseudoAbsorbance') NOT NULL DEFAULT 'INSTRUMENT',
   opticsFailedType varchar(300) NULL,
+  filenameProtDevDataDisk varchar(300) NULL,
 
   PRIMARY KEY (ID) )
   ENGINE = InnoDB;
@@ -265,6 +267,8 @@ CREATE TABLE autoflowStatus (
   analysisCancel    json,
   createdGMPrun     json,
   createdGMPrunts   timestamp    NULL,
+  analysisABDE      json,
+  analysisABDEts    timestamp    NULL,
 
   PRIMARY KEY (ID) )
   ENGINE=InnoDB;
@@ -344,7 +348,7 @@ CREATE  TABLE IF NOT EXISTS autoflowModelsLink (
 
 
 -----------------------------------------------------
--- Table autoflowAnalysisStages --
+-- Table autoflowStages --
 -----------------------------------------------------
 DROP TABLE IF EXISTS autoflowStages;
 
@@ -432,6 +436,33 @@ CREATE  TABLE IF NOT EXISTS autoflowReportItem (
   PRIMARY KEY (reportItemID) )
 ENGINE = InnoDB;
 
+-----------------------------------------------------
+-- Table autoflowAnalysisABDE --
+-----------------------------------------------------
+DROP TABLE IF EXISTS autoflowAnalysisABDE;
+
+CREATE TABLE autoflowAnalysisABDE (
+  ID                int(11)      NOT NULL AUTO_INCREMENT,
+  autoflowID        int(11)      NOT NULL UNIQUE,
+  etype             enum ('SWL','MWL','MIXED')  NOT NULL, 
+  xNormPercent      json,
+  filename_blc      json,
+
+  PRIMARY KEY (ID)
+  ) ENGINE=InnoDB;
+
+
+-----------------------------------------------------
+-- Table autoflowAnalysisABDEStages --
+-----------------------------------------------------
+DROP TABLE IF EXISTS autoflowAnalysisABDEStages;
+
+CREATE TABLE autoflowAnalysisABDEStages (
+  autoflowID        int(11)      NOT NULL UNIQUE,
+  analysisABDE      text         DEFAULT "unknown",
+
+  PRIMARY KEY (autoflowID)
+  ) ENGINE=InnoDB;
 
 
 -- -----------------------------------------------------
