@@ -127,46 +127,54 @@ BEGIN
 
 END$$
 
-DROP FUNCTION IF EXISTS timestamp2UTC$$
-CREATE FUNCTION timestamp2UTC( p_ts TIMESTAMP )
-  RETURNS TIMESTAMP
-  NO SQL
 
+-- New timestamp2UCT, ensure time gaps are treated 
+DROP FUNCTION IF EXISTS timestamp2UTC$$
+CREATE FUNCTION timestamp2UTC( p_ts DATETIME ) 
+  RETURNS DATETIME
+  NO SQL
 BEGIN
   DECLARE count_gmt INT;
-  DECLARE utcTime   TIMESTAMP;
+  DECLARE utcTime   DATETIME;
 
-  -- Let's see if timezone support is there
+  -- 1. Check for timezone table support
   SELECT COUNT(*) INTO count_gmt
   FROM mysql.time_zone_name
-  WHERE name LIKE '%GMT%';
+  WHERE name = 'UTC' OR name = 'GMT';
 
   IF ( count_gmt > 0 ) THEN
-    -- yes, it looks like timezone support is there
-    SELECT CONVERT_TZ( p_ts, @@global.time_zone, 'GMT') INTO utcTime;
+    -- Try the conversion
+    SET utcTime = CONVERT_TZ( p_ts, @@global.time_zone, 'UTC');
+
+    -- 2. GAP CHECK: If input was valid but result is NULL, it's a DST gap
+    IF (utcTime IS NULL AND p_ts IS NOT NULL) THEN
+      -- Shift forward by 1 hour to get past the gap, then convert
+      SET utcTime = CONVERT_TZ( DATE_ADD(p_ts, INTERVAL 1 HOUR), @@global.time_zone, 'UTC');
+    END IF;
 
   ELSE
-    -- no, not there
-    SELECT ADDTIME( p_ts, @UTC_DIFF ) INTO utcTime;
-
+    -- 3. Fallback to manual offset if tables are missing
+    SET utcTime = ADDTIME( p_ts, @UTC_DIFF );
   END IF;
 
   RETURN( utcTime );
-
 END$$
 
+
 -- Checks the user with the passed GUID and password
+-- account_enabled = 0 blocks login even if activated = 1
 DROP FUNCTION IF EXISTS check_user$$
-CREATE FUNCTION check_user( p_personGUID     CHAR(36),
-                            p_password VARCHAR(80) )
+CREATE FUNCTION check_user( p_personGUID CHAR(36),
+                            p_password   VARCHAR(80) )
   RETURNS INT
   READS SQL DATA
 
 BEGIN
-  DECLARE count_user INT;
-  DECLARE md5_pw VARCHAR(80);
-  DECLARE l_password VARCHAR(80);
-  DECLARE activated INT;
+  DECLARE count_user        INT;
+  DECLARE md5_pw            VARCHAR(80);
+  DECLARE l_password        VARCHAR(80);
+  DECLARE l_activated       INT;
+  DECLARE l_account_enabled INT;
 
   call config();
   SET @US3_LAST_ERRNO = @OK;
@@ -202,8 +210,10 @@ BEGIN
 
   ELSE
     /* At this point we should have exactly 1 record */
-    SELECT personID, password, fname, lname, phone, email, userlevel, activated, authenticatePAM, userNamePAM
-    INTO   @US3_ID, l_password, @FNAME, @LNAME, @PHONE, @EMAIL, @USERLEVEL, activated, @authenticatePAM, @userNamePAM
+    SELECT personID, password, fname, lname, phone, email, userlevel,
+           activated, account_enabled, authenticatePAM, userNamePAM
+    INTO   @US3_ID, l_password, @FNAME, @LNAME, @PHONE, @EMAIL, @USERLEVEL,
+           l_activated, l_account_enabled, @authenticatePAM, @userNamePAM
     FROM   people
     WHERE  personGUID = p_personGUID;
 
@@ -258,18 +268,18 @@ BEGIN
 
       RETURN( @US3_LAST_ERRNO );
 
-    ELSEIF ( activated = false ) THEN
+    ELSEIF ( COALESCE(l_activated, 0) = 0 ) THEN
       SET @US3_LAST_ERRNO = @INACTIVE;
       IF ( @authenticatePAM != 1 ) THEN
          SET @US3_LAST_ERROR = CONCAT( 'MySQL: This account has not been activated yet. ',
                                        'Please activate your account first. ',
                                        'The activation code was sent to your e-mail address: ',
-                                        p_email);
+                                        @EMAIL);
       ELSE
          SET @US3_LAST_ERROR = CONCAT( 'MySQL: This account has not been activated yet. ',
                                        'Please contact your administrator' );
-      END IF;      
-        
+      END IF;
+
       SET @US3_ID     = NULL;
       SET @FNAME      = NULL;
       SET @LNAME      = NULL;
@@ -277,7 +287,22 @@ BEGIN
       SET @EMAIL      = NULL;
       SET @personGUID = NULL;
       SET @USERLEVEL  = NULL;
-  
+
+      RETURN( @US3_LAST_ERRNO );
+
+    ELSEIF ( COALESCE(l_account_enabled, 1) = 0 ) THEN
+      -- Administrator has disabled this account
+      SET @US3_LAST_ERRNO = @INACTIVE;
+      SET @US3_LAST_ERROR = 'MySQL: This account has been disabled. Please contact your administrator.';
+
+      SET @US3_ID     = NULL;
+      SET @FNAME      = NULL;
+      SET @LNAME      = NULL;
+      SET @PHONE      = NULL;
+      SET @EMAIL      = NULL;
+      SET @personGUID = NULL;
+      SET @USERLEVEL  = NULL;
+
       RETURN( @US3_LAST_ERRNO );
 
     ELSE
@@ -297,6 +322,7 @@ BEGIN
 END$$
 
 -- Checks the user with the passed email and password
+-- account_enabled = 0 blocks login even if activated = 1
 DROP FUNCTION IF EXISTS check_user_email$$
 CREATE FUNCTION check_user_email( p_email    VARCHAR(63),
                                   p_password VARCHAR(80) )
@@ -304,10 +330,11 @@ CREATE FUNCTION check_user_email( p_email    VARCHAR(63),
   READS SQL DATA
 
 BEGIN
-  DECLARE count_user INT;
-  DECLARE md5_pw     VARCHAR(80);
-  DECLARE l_password VARCHAR(80);
-  DECLARE activated  INT;
+  DECLARE count_user        INT;
+  DECLARE md5_pw            VARCHAR(80);
+  DECLARE l_password        VARCHAR(80);
+  DECLARE l_activated       INT;
+  DECLARE l_account_enabled INT;
 
   call config();
   SET @US3_LAST_ERRNO = @OK;
@@ -349,8 +376,10 @@ BEGIN
 
   ELSE
     -- At this point we should have exactly 1 record
-    SELECT personID, password, fname, lname, phone, personGUID, userlevel, activated, authenticatePAM, userNamePAM
-    INTO   @US3_ID, l_password, @FNAME, @LNAME, @PHONE, @personGUID, @USERLEVEL, activated, @authenticatePAM, @userNamePAM
+    SELECT personID, password, fname, lname, phone, personGUID, userlevel,
+           activated, account_enabled, authenticatePAM, userNamePAM
+    INTO   @US3_ID, l_password, @FNAME, @LNAME, @PHONE, @personGUID, @USERLEVEL,
+           l_activated, l_account_enabled, @authenticatePAM, @userNamePAM
     FROM   people
     WHERE  email = p_email;
 
@@ -404,7 +433,8 @@ BEGIN
       SET @USERLEVEL  = NULL;
 
       RETURN( @US3_LAST_ERRNO );
-    ELSEIF ( activated = false ) THEN
+
+    ELSEIF ( COALESCE(l_activated, 0) = 0 ) THEN
       SET @US3_LAST_ERRNO = @INACTIVE;
       IF ( @authenticatePAM != 1 ) THEN
          SET @US3_LAST_ERROR = CONCAT( 'MySQL: This account has not been activated yet. ',
@@ -412,9 +442,10 @@ BEGIN
                                        'The activation code was sent to your e-mail address: ',
                                         p_email);
       ELSE
-       SET @US3_LAST_ERROR = CONCAT( 'MySQL: This account has not been activated yet. ',
-                                         'Please contact your administrator' );
-      END IF;      
+         SET @US3_LAST_ERROR = CONCAT( 'MySQL: This account has not been activated yet. ',
+                                       'Please contact your administrator' );
+      END IF;
+
       SET @US3_ID     = NULL;
       SET @FNAME      = NULL;
       SET @LNAME      = NULL;
@@ -424,6 +455,22 @@ BEGIN
       SET @USERLEVEL  = NULL;
 
       RETURN( @US3_LAST_ERRNO );
+
+    ELSEIF ( COALESCE(l_account_enabled, 1) = 0 ) THEN
+      -- Administrator has disabled this account
+      SET @US3_LAST_ERRNO = @INACTIVE;
+      SET @US3_LAST_ERROR = 'MySQL: This account has been disabled. Please contact your administrator.';
+
+      SET @US3_ID     = NULL;
+      SET @FNAME      = NULL;
+      SET @LNAME      = NULL;
+      SET @PHONE      = NULL;
+      SET @EMAIL      = NULL;
+      SET @personGUID = NULL;
+      SET @USERLEVEL  = NULL;
+
+      RETURN( @US3_LAST_ERRNO );
+
     ELSE
       -- Successful login
       UPDATE people
@@ -453,12 +500,8 @@ BEGIN
   DECLARE status       INT;
 
   CALL config();
-  SET status = @OK;
 
-  IF ( @US3_ID IS NULL ) THEN
-    SET status = check_user( p_personGUID, p_password );
-
-  END IF;
+  SET status = check_user( p_personGUID, p_password );
 
   RETURN( status );
 
@@ -504,11 +547,7 @@ BEGIN
 
   CALL config();
 
-  SET status = @OK;
-  IF ( @US3_ID IS NULL ) THEN
-    SET status = check_user_email( p_email, p_password );
-
-  END IF;
+  SET status = check_user_email( p_email, p_password );
 
   RETURN( status );
 

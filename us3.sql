@@ -31,6 +31,7 @@ CREATE  TABLE IF NOT EXISTS people (
   username VARCHAR(80) NULL,
   password VARCHAR(80) NOT NULL ,
   activated TINYINT(1) NOT NULL DEFAULT false ,
+  account_enabled TINYINT(1) UNSIGNED NOT NULL DEFAULT 1 ,
   signup TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ,
   lastLogin DATETIME NULL ,
   clusterAuthorizations VARCHAR(255) NOT NULL default 'lonestar5:stampede2:comet:jetstream',
@@ -41,6 +42,40 @@ CREATE  TABLE IF NOT EXISTS people (
   userNamePAM VARCHAR(63) UNIQUE NOT NULL,
   PRIMARY KEY (personID) )
 ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table people_audit
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS people_audit ;
+
+CREATE TABLE IF NOT EXISTS people_audit (
+  auditID            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  personID           INT NOT NULL,
+  user_email         VARCHAR(128) NULL,
+  user_name          VARCHAR(255) NULL,
+  changed_by_personID INT NULL,
+  changed_by_email   VARCHAR(128) NULL,
+  changed_by_name    VARCHAR(255) NULL,
+  action             ENUM(
+                         'CREATE',
+                         'UPDATE',
+                         'DELETE',
+                         'ACCOUNT_ENABLE',
+                         'ACCOUNT_DISABLE',
+                         'USERLEVEL_CHANGE',
+                         'ESCALATION_REJECTED'
+                     ) NOT NULL,
+  old_values         LONGTEXT NULL,
+  new_values         LONGTEXT NULL,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  notes              VARCHAR(255) NULL,
+  PRIMARY KEY (auditID),
+  INDEX idx_people_audit_person_time    (personID, created_at),
+  INDEX idx_people_audit_changedby_time (changed_by_personID, created_at),
+  INDEX idx_people_audit_action_time    (action, created_at),
+  INDEX idx_people_audit_created_at     (created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 
 -- -----------------------------------------------------
@@ -83,9 +118,9 @@ CREATE  TABLE IF NOT EXISTS lab (
 ENGINE = InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflow--
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflow;
 
 CREATE  TABLE IF NOT EXISTS autoflow (
@@ -125,9 +160,9 @@ CREATE  TABLE IF NOT EXISTS autoflow (
   ENGINE = InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowHistory --
------------------------------------------------------
+-- ---------------------------------------------------
 
 DROP TABLE IF EXISTS autoflowHistory;
 
@@ -225,9 +260,9 @@ PRIMARY KEY (ID) )
 ENGINE = InnoDB; 
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowFailed --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowFailed;
 
 CREATE TABLE autoflowFailed (
@@ -241,9 +276,9 @@ CREATE TABLE autoflowFailed (
   ) ENGINE=InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowStatus --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowStatus;
 
 CREATE TABLE autoflowStatus (
@@ -274,9 +309,9 @@ CREATE TABLE autoflowStatus (
   ENGINE=InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowAnalysis -- 
------------------------------------------------------          
+-- ---------------------------------------------------          
 DROP TABLE IF EXISTS autoflowAnalysis;
 
 CREATE TABLE autoflowAnalysis (
@@ -303,9 +338,9 @@ CREATE TABLE autoflowAnalysis (
   PRIMARY KEY (RequestID)
   ) ENGINE=InnoDB;
                                           
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowAnalysisHistory -- 
------------------------------------------------------            
+-- ---------------------------------------------------            
 DROP TABLE IF EXISTS autoflowAnalysisHistory;
                                           
 CREATE TABLE autoflowAnalysisHistory (
@@ -332,9 +367,9 @@ CREATE TABLE autoflowAnalysisHistory (
   PRIMARY KEY (RequestID)
   ) ENGINE=InnoDB;
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowModelsLink --
------------------------------------------------------
+-- ---------------------------------------------------
 
 DROP TABLE IF EXISTS autoflowModelsLink;
 
@@ -347,9 +382,9 @@ CREATE  TABLE IF NOT EXISTS autoflowModelsLink (
   ENGINE = InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowStages --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowStages;
 
 CREATE TABLE autoflowStages (
@@ -364,9 +399,9 @@ CREATE TABLE autoflowStages (
   ) ENGINE=InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowAnalysisStages -- 
------------------------------------------------------            
+-- ---------------------------------------------------            
 DROP TABLE IF EXISTS autoflowAnalysisStages;
                                           
 CREATE TABLE autoflowAnalysisStages (
@@ -376,9 +411,9 @@ CREATE TABLE autoflowAnalysisStages (
   PRIMARY KEY (requestID)
   ) ENGINE=InnoDB;
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowIntensity --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowIntensity;
 
 CREATE TABLE autoflowIntensity (
@@ -392,9 +427,9 @@ CREATE TABLE autoflowIntensity (
 
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowReport
------------------------------------------------------
+-- ---------------------------------------------------
 
 DROP TABLE IF EXISTS autoflowReport;
 
@@ -414,9 +449,9 @@ CREATE  TABLE IF NOT EXISTS autoflowReport (
   PRIMARY KEY (reportID) )
 ENGINE = InnoDB;
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowReportItem
------------------------------------------------------
+-- ---------------------------------------------------
 
 DROP TABLE IF EXISTS autoflowReportItem;
 
@@ -436,9 +471,9 @@ CREATE  TABLE IF NOT EXISTS autoflowReportItem (
   PRIMARY KEY (reportItemID) )
 ENGINE = InnoDB;
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowAnalysisABDE --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowAnalysisABDE;
 
 CREATE TABLE autoflowAnalysisABDE (
@@ -452,9 +487,9 @@ CREATE TABLE autoflowAnalysisABDE (
   ) ENGINE=InnoDB;
 
 
------------------------------------------------------
+-- ---------------------------------------------------
 -- Table autoflowAnalysisABDEStages --
------------------------------------------------------
+-- ---------------------------------------------------
 DROP TABLE IF EXISTS autoflowAnalysisABDEStages;
 
 CREATE TABLE autoflowAnalysisABDEStages (
@@ -2356,6 +2391,37 @@ CREATE TABLE IF NOT EXISTS referenceScan (
   lastUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (ID) )
 ENGINE = InnoDB;
+
+
+-- -----------------------------------------------------
+-- Table personal_access_tokens
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS personal_access_tokens;
+CREATE TABLE IF NOT EXISTS personal_access_tokens
+(
+    id             bigint unsigned auto_increment
+        primary key,
+    tokenable_type varchar(255)    not null,
+    tokenable_id   bigint unsigned not null,
+    name           text            not null,
+    token          varchar(64)     not null,
+    abilities      text            null,
+    last_used_at   timestamp       null,
+    expires_at     timestamp       null,
+    created_at     timestamp       null,
+    updated_at     timestamp       null,
+    constraint personal_access_tokens_token_unique
+        unique (token)
+)
+  ENGINE = InnoDB;
+DROP INDEX IF EXISTS personal_access_tokens_expires_at_index ON personal_access_tokens;
+CREATE INDEX IF NOT EXISTS personal_access_tokens_expires_at_index
+    on personal_access_tokens (expires_at);
+DROP INDEX IF EXISTS personal_access_tokens_tokenable_type_tokenable_id_index ON personal_access_tokens;
+CREATE INDEX IF NOT EXISTS personal_access_tokens_tokenable_type_tokenable_id_index
+    on personal_access_tokens (tokenable_type, tokenable_id);
+
+
 
 
 -- Load some non-changing hardware data
