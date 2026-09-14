@@ -647,6 +647,7 @@ SOURCE us3_buffer_procs.sql
 SOURCE us3_analyte_procs.sql
 SOURCE us3_exp_procs.sql
 SOURCE us3_expdata_procs.sql
+SOURCE us3_catalog_procs.sql
 SOURCE us3_proj_procs.sql
 SOURCE us3_hardware_procs.sql
 SOURCE us3_solution_procs.sql
