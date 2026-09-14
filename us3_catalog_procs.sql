@@ -334,4 +334,142 @@ BEGIN
 
 END$$
 
+-- ----------------------------------------------------------------------
+-- Every rawData record the investigator can see, with the experiment it
+-- belongs to.  This is the bulk form of get_rawData_by_experiment: one
+-- query lists a whole store instead of one per experiment.
+--
+-- It deliberately does NOT hash the data blobs.  MD5( data ) means reading
+-- every raw-data blob in the store, which on a real collection is seconds
+-- of server time and by far the most expensive part of a scan, while all
+-- it answers is whether a record that also exists on local disk still
+-- matches.  A scan therefore lists with this and asks
+-- get_rawData_by_experiment for the checksums of the one experiment it is
+-- actually comparing.
+-- ----------------------------------------------------------------------
+DROP PROCEDURE IF EXISTS get_rawData_by_person$$
+CREATE PROCEDURE get_rawData_by_person ( p_personGUID CHAR(36),
+                                         p_password   VARCHAR(80),
+                                         p_ID         INT )
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_ID      INT     DEFAULT 0;
+  DECLARE l_allowed TINYINT DEFAULT 0;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    -- This is an admin; p_ID of 0 means every experiment in the database
+    SET l_ID            = p_ID;
+    SET l_allowed       = 1;
+    SET @US3_LAST_ERRNO = @OK;
+    SET @US3_LAST_ERROR = '';
+
+  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( ( p_ID != 0 ) && ( p_ID != @US3_ID ) ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+
+    ELSE
+      SET l_ID      = @US3_ID;
+      SET l_allowed = 1;
+
+    END IF;
+
+  END IF;
+
+  IF ( l_allowed = 0 ) THEN
+    IF ( @US3_LAST_ERRNO = @OK ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+    END IF;
+
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+    SELECT @OK AS status;
+
+    -- The column layout is the one get_rawData_by_experiment returns, so a
+    -- caller reads either with the same code; checksum and size are null
+    -- because nothing was hashed
+    SELECT   r.rawDataID, r.rawDataGUID, r.label, r.filename, r.comment,
+             r.experimentID, r.solutionID, r.channelID,
+             timestamp2UTC( r.lastUpdated ) AS UTC_lastUpdated,
+             NULL AS checksum, NULL AS size
+    FROM     rawData r, experimentPerson p
+    WHERE    p.experimentID = r.experimentID
+    AND      ( l_ID = 0 OR p.personID = l_ID )
+    ORDER BY r.experimentID, r.filename;
+
+  END IF;
+
+END$$
+
+-- ----------------------------------------------------------------------
+-- Every editedData record the investigator can see, with the GUID of the
+-- triple it belongs to and the experiment that triple is in.  The bulk
+-- form of get_editedData_by_experiment, and it does not hash the blobs
+-- either; see the note on get_rawData_by_person.
+-- ----------------------------------------------------------------------
+DROP PROCEDURE IF EXISTS get_editedData_by_person$$
+CREATE PROCEDURE get_editedData_by_person ( p_personGUID CHAR(36),
+                                            p_password   VARCHAR(80),
+                                            p_ID         INT )
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_ID      INT     DEFAULT 0;
+  DECLARE l_allowed TINYINT DEFAULT 0;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    SET l_ID            = p_ID;
+    SET l_allowed       = 1;
+    SET @US3_LAST_ERRNO = @OK;
+    SET @US3_LAST_ERROR = '';
+
+  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
+    IF ( ( p_ID != 0 ) && ( p_ID != @US3_ID ) ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+
+    ELSE
+      SET l_ID      = @US3_ID;
+      SET l_allowed = 1;
+
+    END IF;
+
+  END IF;
+
+  IF ( l_allowed = 0 ) THEN
+    IF ( @US3_LAST_ERRNO = @OK ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+    END IF;
+
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+    SELECT @OK AS status;
+
+    SELECT   d.editedDataID, d.rawDataID, r.rawDataGUID, d.editGUID,
+             d.label, d.filename, d.comment,
+             timestamp2UTC( d.lastUpdated ) AS UTC_lastUpdated,
+             NULL AS checksum, NULL AS size
+    FROM     editedData d, rawData r, experimentPerson p
+    WHERE    d.rawDataID    = r.rawDataID
+    AND      p.experimentID = r.experimentID
+    AND      ( l_ID = 0 OR p.personID = l_ID )
+    ORDER BY r.experimentID, d.filename;
+
+  END IF;
+
+END$$
+
 DELIMITER ;
