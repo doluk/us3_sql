@@ -312,6 +312,33 @@ CREATE TABLE autoflowStatus (
 
 
 -- ---------------------------------------------------
+-- Table analysisPipeline --
+-- One row per analysis pipeline submitted from the LIMS queue setup.
+-- Each stage of a pipeline is one autoflowAnalysis row with this pipelineID.
+-- status: SETUP    rows are being created, ignored by the scheduler
+--         ACTIVE   scheduled by submitctl.php
+--         FINISHED all rows finished/skipped, rows moved to autoflowAnalysisHistory
+--         CANCELED canceled by the user, rows moved to autoflowAnalysisHistory
+-- ---------------------------------------------------
+DROP TABLE IF EXISTS analysisPipeline;
+
+CREATE TABLE analysisPipeline (
+  pipelineID        int(11)      NOT NULL AUTO_INCREMENT,
+  name              varchar(255) NOT NULL,
+  invID             int(11)      NOT NULL,
+  clusterDefault    text         DEFAULT "localhost",
+  specJson          json,
+  status            enum('SETUP','ACTIVE','FINISHED','CANCELED') NOT NULL DEFAULT 'SETUP',
+  createTime        timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updateTime        timestamp    DEFAULT 0 ON UPDATE CURRENT_TIMESTAMP,
+  createUser        varchar(128) DEFAULT (current_user()),
+  updateUser        varchar(128) DEFAULT "",
+
+  PRIMARY KEY (pipelineID),
+  KEY (invID)
+  ) ENGINE=InnoDB;
+
+-- ---------------------------------------------------
 -- Table autoflowAnalysis -- 
 -- ---------------------------------------------------          
 DROP TABLE IF EXISTS autoflowAnalysis;
@@ -336,8 +363,13 @@ CREATE TABLE autoflowAnalysis (
   createUser        varchar(128) DEFAULT (current_user()),
   updateUser        varchar(128) DEFAULT "", # ON UPDATE (current_user()),
   autoflowID        int(11)      NOT NULL,
+  pipelineID        int(11)      DEFAULT NULL,                 # analysisPipeline; NULL = GMP autoflow row
+  rowKind           enum('triple','group') NOT NULL DEFAULT 'triple',
+  groupName         varchar(80)  DEFAULT NULL,
+  stageKey          varchar(32)  DEFAULT NULL,
 
-  PRIMARY KEY (RequestID)
+  PRIMARY KEY (RequestID),
+  KEY (pipelineID)
   ) ENGINE=InnoDB;
                                           
 -- ---------------------------------------------------
@@ -365,8 +397,13 @@ CREATE TABLE autoflowAnalysisHistory (
   createUser        varchar(128) DEFAULT (current_user()),
   updateUser        varchar(128) DEFAULT "", # ON UPDATE (current_user()),
   autoflowID        int(11)      NOT NULL,
+  pipelineID        int(11)      DEFAULT NULL,                 # analysisPipeline; NULL = GMP autoflow row
+  rowKind           enum('triple','group') NOT NULL DEFAULT 'triple',
+  groupName         varchar(80)  DEFAULT NULL,
+  stageKey          varchar(32)  DEFAULT NULL,
 
-  PRIMARY KEY (RequestID)
+  PRIMARY KEY (RequestID),
+  KEY (pipelineID)
   ) ENGINE=InnoDB;
 
 -- ---------------------------------------------------

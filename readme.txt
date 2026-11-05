@@ -22,3 +22,8 @@ date it's a little more difficult, because there are some records that get
 populated in there as part of the setup process too. However, I believe I
 have scripts that can be used to refresh that too.
 
+
+upgrades:
+Scripts that bring an existing instance database up to date with us3.sql
+(new tables/columns). Run them once per instance database, e.g.
+mysql -u us3admin -p <instance_db> < upgrades/2026-11-analysis_pipeline.sql
