@@ -22,6 +22,18 @@ DELIMITER $$
 -- records hanging off it.  The counts let a tree show which experiments
 -- are worth expanding without reading any of their children, and none of
 -- this touches a data blob.
+--
+-- Each count is the number of rows the matching detail procedure returns
+-- for the same caller and p_ID: rawCount and editCount those of
+-- get_rawData_by_experiment and get_editedData_by_experiment, modelCount
+-- and noiseCount those of get_model_desc_by_experiment and
+-- get_noise_desc_by_experiment, which list only models (and noise fitted
+-- with models) that have a modelPerson row for the investigator.  Counting
+-- every model under the experiment instead made a tree's counts change
+-- once the experiment was loaded.
+--
+-- experimentPerson is tested with EXISTS, not joined, so an experiment
+-- linked to several people is still one row when an admin passes p_ID = 0.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_experiment_summary$$
 CREATE PROCEDURE get_experiment_summary ( p_personGUID CHAR(36),
@@ -45,7 +57,7 @@ BEGIN
     SET @US3_LAST_ERROR = '';
 
   ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) && ( p_ID != @US3_ID ) ) THEN
+    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
       -- Uh oh, can't do that
       SET @US3_LAST_ERRNO = @NOTPERMITTED;
       SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this experiment';
@@ -90,19 +102,25 @@ BEGIN
                WHERE  d.rawDataID     = r2.rawDataID
                AND    r2.experimentID = e.experimentID ) AS editCount,
              ( SELECT COUNT(*)
-               FROM   model m, editedData d2, rawData r3
+               FROM   model m, editedData d2, rawData r3, modelPerson mp
                WHERE  m.editedDataID  = d2.editedDataID
                AND    d2.rawDataID    = r3.rawDataID
-               AND    r3.experimentID = e.experimentID ) AS modelCount,
+               AND    r3.experimentID = e.experimentID
+               AND    mp.modelID      = m.modelID
+               AND    ( l_ID = 0 OR mp.personID = l_ID ) ) AS modelCount,
              ( SELECT COUNT(*)
-               FROM   noise n, editedData d3, rawData r4
+               FROM   noise n, editedData d3, rawData r4, modelPerson mp2
                WHERE  n.editedDataID  = d3.editedDataID
                AND    d3.rawDataID    = r4.rawDataID
-               AND    r4.experimentID = e.experimentID ) AS noiseCount
+               AND    r4.experimentID = e.experimentID
+               AND    mp2.modelID     = n.modelID
+               AND    ( l_ID = 0 OR mp2.personID = l_ID ) ) AS noiseCount
     FROM     experiment e
-             JOIN experimentPerson p ON e.experimentID = p.experimentID
-             LEFT JOIN project pr    ON e.projectID    = pr.projectID
-    WHERE    ( l_ID = 0 OR p.personID = l_ID )
+             LEFT JOIN project pr ON e.projectID = pr.projectID
+    WHERE    EXISTS ( SELECT 1
+                      FROM   experimentPerson p
+                      WHERE  p.experimentID = e.experimentID
+                      AND    ( l_ID = 0 OR p.personID = l_ID ) )
     ORDER BY e.runID;
 
   END IF;
@@ -129,18 +147,21 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  SELECT COUNT(*)
-  INTO   count_rawData
-  FROM   rawData
-  WHERE  experimentID = p_experimentID;
-
   -- verify_experiment_permission() matches the caller against @US3_ID, which
   -- is only set once the user has been verified in this connection, so that
   -- happens first here rather than being assumed
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) = @OK ) THEN
+  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+    SELECT COUNT(*)
+    INTO   count_rawData
+    FROM   rawData
+    WHERE  experimentID = p_experimentID;
+
     IF ( count_rawData = 0 ) THEN
       SET @US3_LAST_ERRNO = @NOROWS;
       SET @US3_LAST_ERROR = 'MySQL: no rows returned';
@@ -159,9 +180,6 @@ BEGIN
       ORDER BY filename;
 
     END IF;
-
-  ELSE
-    SELECT @US3_LAST_ERRNO AS status;
 
   END IF;
 
@@ -185,17 +203,20 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  SELECT COUNT(*)
-  INTO   count_editedData
-  FROM   editedData d, rawData r
-  WHERE  d.rawDataID    = r.rawDataID
-  AND    r.experimentID = p_experimentID;
-
   -- See the note in get_rawData_by_experiment about @US3_ID
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) = @OK ) THEN
+  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+    SELECT @US3_LAST_ERRNO AS status;
+
+  ELSE
+    SELECT COUNT(*)
+    INTO   count_editedData
+    FROM   editedData d, rawData r
+    WHERE  d.rawDataID    = r.rawDataID
+    AND    r.experimentID = p_experimentID;
+
     IF ( count_editedData = 0 ) THEN
       SET @US3_LAST_ERRNO = @NOROWS;
       SET @US3_LAST_ERROR = 'MySQL: no rows returned';
@@ -216,9 +237,6 @@ BEGIN
 
     END IF;
 
-  ELSE
-    SELECT @US3_LAST_ERRNO AS status;
-
   END IF;
 
 END$$
@@ -227,6 +245,9 @@ END$$
 -- Every model fitted to any edit of one experiment.  The columns are the
 -- ones get_model_desc_by_editID returns, so a caller can read either with
 -- the same code.
+--
+-- modelPerson's primary key is modelID, so joining it cannot repeat a
+-- model, whatever p_ID is.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_model_desc_by_experiment$$
 CREATE PROCEDURE get_model_desc_by_experiment ( p_personGUID   CHAR(36),
@@ -346,6 +367,10 @@ END$$
 -- matches.  A scan therefore lists with this and asks
 -- get_rawData_by_experiment for the checksums of the one experiment it is
 -- actually comparing.
+--
+-- experimentPerson is tested with EXISTS rather than joined, so that an
+-- experiment linked to more than one person -- or to the same person
+-- twice -- does not list its records more than once.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_rawData_by_person$$
 CREATE PROCEDURE get_rawData_by_person ( p_personGUID CHAR(36),
@@ -369,7 +394,7 @@ BEGIN
     SET @US3_LAST_ERROR = '';
 
   ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) && ( p_ID != @US3_ID ) ) THEN
+    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
       SET @US3_LAST_ERRNO = @NOTPERMITTED;
       SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
 
@@ -399,9 +424,11 @@ BEGIN
              r.experimentID, r.solutionID, r.channelID,
              timestamp2UTC( r.lastUpdated ) AS UTC_lastUpdated,
              NULL AS checksum, NULL AS size
-    FROM     rawData r, experimentPerson p
-    WHERE    p.experimentID = r.experimentID
-    AND      ( l_ID = 0 OR p.personID = l_ID )
+    FROM     rawData r
+    WHERE    EXISTS ( SELECT 1
+                      FROM   experimentPerson p
+                      WHERE  p.experimentID = r.experimentID
+                      AND    ( l_ID = 0 OR p.personID = l_ID ) )
     ORDER BY r.experimentID, r.filename;
 
   END IF;
@@ -412,7 +439,8 @@ END$$
 -- Every editedData record the investigator can see, with the GUID of the
 -- triple it belongs to and the experiment that triple is in.  The bulk
 -- form of get_editedData_by_experiment, and it does not hash the blobs
--- either; see the note on get_rawData_by_person.
+-- either; see the notes on get_rawData_by_person, which also apply to how
+-- experimentPerson is tested.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_editedData_by_person$$
 CREATE PROCEDURE get_editedData_by_person ( p_personGUID CHAR(36),
@@ -435,7 +463,7 @@ BEGIN
     SET @US3_LAST_ERROR = '';
 
   ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) && ( p_ID != @US3_ID ) ) THEN
+    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
       SET @US3_LAST_ERRNO = @NOTPERMITTED;
       SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
 
@@ -462,10 +490,12 @@ BEGIN
              d.label, d.filename, d.comment,
              timestamp2UTC( d.lastUpdated ) AS UTC_lastUpdated,
              NULL AS checksum, NULL AS size
-    FROM     editedData d, rawData r, experimentPerson p
-    WHERE    d.rawDataID    = r.rawDataID
-    AND      p.experimentID = r.experimentID
-    AND      ( l_ID = 0 OR p.personID = l_ID )
+    FROM     editedData d
+             JOIN rawData r ON d.rawDataID = r.rawDataID
+    WHERE    EXISTS ( SELECT 1
+                      FROM   experimentPerson p
+                      WHERE  p.experimentID = r.experimentID
+                      AND    ( l_ID = 0 OR p.personID = l_ID ) )
     ORDER BY r.experimentID, d.filename;
 
   END IF;
