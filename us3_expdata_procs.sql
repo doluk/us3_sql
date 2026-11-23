@@ -1370,7 +1370,33 @@ BEGIN
 
 END$$
 
--- DELETEs all editedData related to an edit profile, plus information in related tables
+-- DELETEs an edit profile, plus the records that depend on it:
+--   - its report documents (and their document links);
+--   - every noise record computed from it (noise.editedDataID), whichever
+--     model it was fitted with -- a global fit's noise names a model of
+--     another edit, and it is this edit's noise all the same.  This
+--     includes noise fitted with another investigator's model: it cannot
+--     outlive the edit it was computed from (the noise table's foreign key
+--     forbids it);
+--   - every noise record fitted with one of its models, whichever edit it
+--     was computed from;
+--   - its models (and their modelPerson rows) and pcsa_modelrecs.
+--
+-- All or nothing.  The deletes run in a transaction of their own when the
+-- caller is not in one; inside a caller's transaction (a client may wrap
+-- several writes in one, as UltraScan's import does) they run under a
+-- savepoint instead, since START TRANSACTION would commit the caller's
+-- transaction.  If any of them fails, everything this call deleted is
+-- rolled back (to the savepoint, leaving the caller's transaction open
+-- with its own work), and the status says why: @CONSTRAINT_FAILED for a
+-- foreign key that still refers to the edit, @ERROR for anything else,
+-- with the server's message in @US3_LAST_ERROR.  A deadlock is the one
+-- failure that can take a caller's whole transaction with it; the server
+-- rolls that back itself, and the message says so.
+--
+-- The special "UNASSIGNED" edit (editedDataID 1) cannot be deleted:
+-- verify_editData_permission() lets anybody use it, and deleting it would
+-- delete every investigator's models that are linked to it.
 DROP PROCEDURE IF EXISTS delete_editedData$$
 CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
                                      p_password     VARCHAR(80),
@@ -1378,28 +1404,118 @@ CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
   MODIFIES SQL DATA
 
 BEGIN
+  DECLARE l_in_trx   TINYINT DEFAULT 1;
+  DECLARE l_started  TINYINT DEFAULT 0;
+  DECLARE l_errno    INT     DEFAULT 0;
+  DECLARE l_message  TEXT    DEFAULT '';
+  DECLARE l_status   INT;
+
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    GET DIAGNOSTICS CONDITION 1
+      l_errno = MYSQL_ERRNO, l_message = MESSAGE_TEXT;
+
+    IF ( l_started = 1 ) THEN
+      BEGIN
+        -- After a deadlock the server has already rolled back the whole
+        -- transaction, savepoint and all; there is nothing left to undo
+        DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+          SET l_message = CONCAT( l_message,
+                                  ' (the transaction was rolled back)' );
+
+        IF ( l_in_trx = 1 ) THEN
+          ROLLBACK TO SAVEPOINT delete_editedData;
+          RELEASE SAVEPOINT delete_editedData;
+        ELSE
+          ROLLBACK;
+        END IF;
+      END;
+    END IF;
+
+    IF ( l_errno IN ( 1451, 1452 ) ) THEN
+      SET @US3_LAST_ERRNO = @CONSTRAINT_FAILED;
+    ELSE
+      SET @US3_LAST_ERRNO = @ERROR;
+    END IF;
+
+    SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted, and nothing ',
+                                  'that depends on it was: error ', l_errno,
+                                  ': ', l_message );
+
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END;
+
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  IF ( verify_editData_permission( p_personGUID, p_password, p_editedDataID ) = @OK ) THEN
+  -- verify_experiment_permission(), behind verify_editData_permission(),
+  -- matches experimentPerson against @US3_ID before it verifies the
+  -- caller, so the caller is verified first, here
+  SET l_status = verify_user( p_personGUID, p_password );
 
-    -- Make sure records match if they have related tables or not
+  IF ( l_status != @OK ) THEN
+    -- check_user() has recorded why in @US3_LAST_ERROR
+    SET @US3_LAST_ERRNO = l_status;
+
+  ELSEIF ( p_editedDataID = 1 ) THEN
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: the UNASSIGNED edit profile cannot be deleted';
+
+  ELSEIF ( verify_editData_permission( p_personGUID, p_password, p_editedDataID ) = @OK ) THEN
+
+    -- Is the caller in a transaction?  A savepoint outlives the statement
+    -- that set it only inside one; outside, autocommit ends it at once and
+    -- releasing it fails.  (@@in_transaction would say so directly, but
+    -- MySQL does not have it.)
+    BEGIN
+      DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 0;
+      SAVEPOINT delete_editedData;
+      RELEASE SAVEPOINT delete_editedData;
+    END;
+
+    IF ( l_in_trx = 1 ) THEN
+      SAVEPOINT delete_editedData;
+    ELSE
+      START TRANSACTION;
+    END IF;
+    SET l_started = 1;
+
+    -- Children before parents, so that no foreign key is checked against a
+    -- row that is about to go
     DELETE      reportDocument, documentLink
     FROM        reportDocument
     LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
     WHERE       reportDocument.editedDataID = p_editedDataID;
 
-    DELETE      model, noise, modelPerson, pcsa_modelrecs
-    FROM        editedData
-    LEFT JOIN   model       ON ( model.editedDataID   = editedData.editedDataID )
-    LEFT JOIN   noise       ON ( noise.modelID        = model.modelID )
-    LEFT JOIN   modelPerson ON ( modelPerson.modelID  = model.modelID )
-    LEFT JOIN   pcsa_modelrecs ON ( pcsa_modelrecs.editedDataID = editedData.editedDataID )
-    WHERE       editedData.editedDataID = p_editedDataID;
+    DELETE      FROM noise
+    WHERE       editedDataID = p_editedDataID;
+
+    DELETE      noise
+    FROM        noise
+    JOIN        model ON ( model.modelID = noise.modelID )
+    WHERE       model.editedDataID = p_editedDataID;
+
+    DELETE      modelPerson
+    FROM        modelPerson
+    JOIN        model ON ( model.modelID = modelPerson.modelID )
+    WHERE       model.editedDataID = p_editedDataID;
+
+    DELETE      FROM model
+    WHERE       editedDataID = p_editedDataID;
+
+    DELETE      FROM pcsa_modelrecs
+    WHERE       editedDataID = p_editedDataID;
 
     DELETE      FROM editedData
-    WHERE       editedData.editedDataID = p_editedDataID;
+    WHERE       editedDataID = p_editedDataID;
+
+    IF ( l_in_trx = 1 ) THEN
+      RELEASE SAVEPOINT delete_editedData;
+    ELSE
+      COMMIT;
+    END IF;
 
   END IF;
 
