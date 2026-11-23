@@ -67,6 +67,22 @@
 -- An experiment may have several experimentPerson rows; every procedure
 -- here still returns each record once.
 --
+-- Which experiment a record is in
+-- -------------------------------
+-- Raw data is in the experiment it names, an edit in its raw data's, and a
+-- model in its edit's.  A noise record is in the experiment of the model
+-- it was fitted with -- noise -> model -> editedData -> rawData -- which
+-- is where UltraScan3's catalog files it, under that model.  This is not
+-- always the experiment of the edit the noise was computed from
+-- (noise.editedDataID): the noise of a global fit is recorded against each
+-- data set's edit but fitted with one model, and it is listed and counted
+-- with that model's experiment only.  The noise data set still gives the
+-- noise record's own editedDataID.
+--
+-- A model on the special UNASSIGNED edit (editedDataID 1) has no raw data
+-- and so no experiment; neither the model nor any noise fitted with it is
+-- listed or counted for any experiment.
+--
 
 DELIMITER $$
 
@@ -83,7 +99,8 @@ DELIMITER $$
 -- get_noise_desc_by_experiment, which list only models (and noise fitted
 -- with models) that have a modelPerson row for the investigator.  Counting
 -- every model under the experiment instead made a tree's counts change
--- once the experiment was loaded.
+-- once the experiment was loaded.  Noise is counted with the experiment of
+-- its model, as it is listed, not of the edit it was computed from.
 --
 -- experimentPerson is tested with EXISTS, not joined, so an experiment
 -- linked to several people is still one row when an admin passes p_ID = 0.
@@ -171,11 +188,13 @@ BEGIN
                AND    mp.modelID      = m.modelID
                AND    ( l_ID = 0 OR mp.personID = l_ID ) ) AS modelCount,
              ( SELECT COUNT(*)
-               FROM   noise n, editedData d3, rawData r4, modelPerson mp2
-               WHERE  n.editedDataID  = d3.editedDataID
+               FROM   noise n, model m2, editedData d3, rawData r4,
+                      modelPerson mp2
+               WHERE  n.modelID       = m2.modelID
+               AND    m2.editedDataID = d3.editedDataID
                AND    d3.rawDataID    = r4.rawDataID
                AND    r4.experimentID = e.experimentID
-               AND    mp2.modelID     = n.modelID
+               AND    mp2.modelID     = m2.modelID
                AND    ( l_ID = 0 OR mp2.personID = l_ID ) ) AS noiseCount
     FROM     experiment e
              LEFT JOIN project pr ON e.projectID = pr.projectID
@@ -368,8 +387,13 @@ BEGIN
 END$$
 
 -- ----------------------------------------------------------------------
--- Every noise record belonging to any edit of one experiment.  The columns
--- are the ones get_noise_desc_by_editID returns.
+-- Every noise record fitted with a model of one experiment -- that is,
+-- with a model get_model_desc_by_experiment lists for the same caller and
+-- p_ID.  The noise is in the model's experiment even when the edit it was
+-- computed from (noise.editedDataID, the third column) is in another, as
+-- with a global fit; noise of a model on the UNASSIGNED edit is in no
+-- experiment.  See "Which experiment a record is in" in the file header.
+-- The columns are the ones get_noise_desc_by_editID returns.
 --
 -- A noise record is the investigator's when the model it was fitted with
 -- (noise.modelID) has a modelPerson row for them.  No noise answers OK
@@ -415,9 +439,10 @@ BEGIN
              timestamp2UTC( n.timeEntered ) AS UTC_timeEntered,
              MD5( n.xml ) AS checksum, LENGTH( n.xml ) AS size, n.description
     FROM     noise n
-             JOIN editedData d   ON n.editedDataID = d.editedDataID
+             JOIN model      m   ON n.modelID      = m.modelID
+             JOIN editedData d   ON m.editedDataID = d.editedDataID
              JOIN rawData    r   ON d.rawDataID    = r.rawDataID
-             JOIN modelPerson mp ON mp.modelID     = n.modelID
+             JOIN modelPerson mp ON mp.modelID     = m.modelID
     WHERE    r.experimentID = p_experimentID
     AND      ( l_ID = 0 OR mp.personID = l_ID )
     ORDER BY n.timeEntered DESC;
