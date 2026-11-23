@@ -30,10 +30,21 @@
 --                         read the experiment, but it has no rawData /
 --                         editedData.  No data set follows.
 --   @NOTPERMITTED (201)   an ordinary user named another investigator, or
---                         asked about an experiment that is not theirs.
---   @NO_EXPERIMENT (508)  the *_by_experiment procedures: no such experiment.
---   @NO_ACCT (102), @BADPASS (104), @INACTIVE (103)
---                         the login itself failed (from check_user).
+--                         asked about an experiment that has no
+--                         experimentPerson row for them.
+--   @NO_EXPERIMENT (508)  the *_by_experiment procedures: there is no
+--                         experiment with that ID.  This holds for every
+--                         ID, 1 included; see "Experiment 1" below.
+--
+-- and, when the login itself fails (from check_user):
+--
+--   @EMPTY (105)          the personGUID is empty or blank.
+--   @NO_ACCT (102)        no account has that personGUID.
+--   @BADPASS (104)        a wrong password; also an account below userlevel
+--                         2 (analyst), whatever the password, and a PAM
+--                         account whose MySQL user name does not match.
+--   @INACTIVE (103)       an account not activated yet, or one an
+--                         administrator has disabled (account_enabled = 0).
 --
 -- "Nothing there" is reported in two ways, and both are kept as they are
 -- because clients depend on them:
@@ -83,8 +94,86 @@
 -- and so no experiment; neither the model nor any noise fitted with it is
 -- listed or counted for any experiment.
 --
+-- Experiment 1
+-- ------------
+-- verify_experiment_permission() (us3_exp_procs.sql), which most
+-- procedures use, lets anybody read or modify experiment 1, a "magic" ID
+-- some programs once used temporarily -- even when that ID is a real
+-- experiment of some investigator, and even when it does not exist.  The
+-- procedures here do not use it.  They allow an experiment to an
+-- administrator, and to anyone else only through an experimentPerson row
+-- (verify_catalog_experiment below), the same for every ID.  Changing
+-- verify_experiment_permission itself would change every procedure that
+-- relies on the magic ID, so it is left alone.
+--
+-- The login, and a client's open transaction
+-- ------------------------------------------
+-- Every procedure here logs the caller in with check_user()
+-- (us3_procedures.sql), and a successful check_user() UPDATEs that
+-- person's people.lastLogin.  The UPDATE takes an exclusive lock on the
+-- person's row, held until the transaction ends.  On its own a call is
+-- its own transaction and the lock is gone at once; but while a client
+-- holds a transaction open -- UltraScan3's data import does, for the whole
+-- import -- the first procedure it calls inside it keeps that row locked,
+-- and every other connection logging in as the same investigator (a
+-- second program browsing the same data, say) waits in check_user() until
+-- the import commits, or fails after innodb_lock_wait_timeout (50 s by
+-- default) with error 1205.  See readme.txt for ways around it.
+--
 
 DELIMITER $$
+
+-- ----------------------------------------------------------------------
+-- May the caller verified last in this connection open experiment
+-- p_experimentID with the *_by_experiment procedures?  Returns @OK,
+-- @NO_EXPERIMENT or @NOTPERMITTED, and records the reason in
+-- @US3_LAST_ERRNO / @US3_LAST_ERROR.
+--
+-- It reads @US3_ID and @USERLEVEL, which check_user() sets, so the caller
+-- must have been verified (verify_user) in the same procedure call first.
+-- Unlike verify_experiment_permission() it gives experiment 1 no special
+-- treatment (see "Experiment 1" in the header), and it does not log the
+-- caller in again.
+-- ----------------------------------------------------------------------
+DROP FUNCTION IF EXISTS verify_catalog_experiment$$
+CREATE FUNCTION verify_catalog_experiment( p_experimentID INT )
+  RETURNS INT
+  READS SQL DATA
+
+BEGIN
+  DECLARE count_experiments INT;
+  DECLARE count_permissions INT;
+
+  CALL config();
+
+  SELECT COUNT(*)
+  INTO   count_experiments
+  FROM   experiment
+  WHERE  experimentID = p_experimentID;
+
+  SELECT COUNT(*)
+  INTO   count_permissions
+  FROM   experimentPerson
+  WHERE  experimentID = p_experimentID
+  AND    personID     = @US3_ID;
+
+  IF ( count_experiments = 0 ) THEN
+    SET @US3_LAST_ERRNO = @NO_EXPERIMENT;
+    SET @US3_LAST_ERROR = 'MySQL: the specified experiment does not exist';
+
+  ELSEIF ( @USERLEVEL >= @US3_ADMIN OR count_permissions > 0 ) THEN
+    SET @US3_LAST_ERRNO = @OK;
+    SET @US3_LAST_ERROR = '';
+
+  ELSE
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this experiment';
+
+  END IF;
+
+  RETURN( @US3_LAST_ERRNO );
+
+END$$
 
 -- ----------------------------------------------------------------------
 -- The first layer of a scan: one row per experiment, with the number of
@@ -128,25 +217,25 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
-    -- This is an admin; p_ID of 0 means every experiment in the database
-    SET l_ID            = p_ID;
-    SET l_allowed       = 1;
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
+  -- One login: check_user() sets @US3_ID and @USERLEVEL, and records why
+  -- when it fails
+  IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
+    SET l_allowed = 0;
 
-  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
-      -- Uh oh, can't do that
-      SET @US3_LAST_ERRNO = @NOTPERMITTED;
-      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this experiment';
+  ELSEIF ( @USERLEVEL >= @US3_ADMIN ) THEN
+    -- This is an admin; p_ID of 0 means every investigator
+    SET l_ID      = p_ID;
+    SET l_allowed = 1;
 
-    ELSE
-      -- Ok, user wants his own experiments
-      SET l_ID      = @US3_ID;
-      SET l_allowed = 1;
+  ELSEIF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
+    -- Uh oh, can't do that
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this experiment';
 
-    END IF;
+  ELSE
+    -- The user's own records
+    SET l_ID      = @US3_ID;
+    SET l_allowed = 1;
 
   END IF;
 
@@ -230,13 +319,13 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  -- verify_experiment_permission() matches the caller against @US3_ID, which
-  -- is only set once the user has been verified in this connection, so that
+  -- verify_catalog_experiment() matches the caller against @US3_ID and
+  -- @USERLEVEL, which are only set once the user has been verified, so that
   -- happens first here rather than being assumed
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+  ELSEIF ( verify_catalog_experiment( p_experimentID ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
   ELSE
@@ -292,7 +381,7 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+  ELSEIF ( verify_catalog_experiment( p_experimentID ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
   ELSE
@@ -353,20 +442,18 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+  ELSEIF ( verify_catalog_experiment( p_experimentID ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
   ELSE
-    IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    -- verify_user() has set @USERLEVEL; an administrator may name anyone
+    IF ( @USERLEVEL >= @US3_ADMIN ) THEN
       SET l_ID = p_ID;
 
     ELSE
       SET l_ID = @US3_ID;
 
     END IF;
-
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
 
     SELECT @OK AS status;
 
@@ -417,20 +504,18 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
-  ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != @OK ) THEN
+  ELSEIF ( verify_catalog_experiment( p_experimentID ) != @OK ) THEN
     SELECT @US3_LAST_ERRNO AS status;
 
   ELSE
-    IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    -- verify_user() has set @USERLEVEL; an administrator may name anyone
+    IF ( @USERLEVEL >= @US3_ADMIN ) THEN
       SET l_ID = p_ID;
 
     ELSE
       SET l_ID = @US3_ID;
 
     END IF;
-
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
 
     SELECT @OK AS status;
 
@@ -482,23 +567,24 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
-    -- This is an admin; p_ID of 0 means every experiment in the database
-    SET l_ID            = p_ID;
-    SET l_allowed       = 1;
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
+  -- One login: check_user() sets @US3_ID and @USERLEVEL, and records why
+  -- when it fails
+  IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
+    SET l_allowed = 0;
 
-  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
-      SET @US3_LAST_ERRNO = @NOTPERMITTED;
-      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+  ELSEIF ( @USERLEVEL >= @US3_ADMIN ) THEN
+    -- This is an admin; p_ID of 0 means every investigator
+    SET l_ID      = p_ID;
+    SET l_allowed = 1;
 
-    ELSE
-      SET l_ID      = @US3_ID;
-      SET l_allowed = 1;
+  ELSEIF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
 
-    END IF;
+  ELSE
+    -- The user's own records
+    SET l_ID      = @US3_ID;
+    SET l_allowed = 1;
 
   END IF;
 
@@ -552,22 +638,24 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
-    SET l_ID            = p_ID;
-    SET l_allowed       = 1;
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
+  -- One login: check_user() sets @US3_ID and @USERLEVEL, and records why
+  -- when it fails
+  IF ( verify_user( p_personGUID, p_password ) != @OK ) THEN
+    SET l_allowed = 0;
 
-  ELSEIF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
-    IF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
-      SET @US3_LAST_ERRNO = @NOTPERMITTED;
-      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
+  ELSEIF ( @USERLEVEL >= @US3_ADMIN ) THEN
+    -- This is an admin; p_ID of 0 means every investigator
+    SET l_ID      = p_ID;
+    SET l_allowed = 1;
 
-    ELSE
-      SET l_ID      = @US3_ID;
-      SET l_allowed = 1;
+  ELSEIF ( ( p_ID != 0 ) AND ( p_ID != @US3_ID ) ) THEN
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view this data';
 
-    END IF;
+  ELSE
+    -- The user's own records
+    SET l_ID      = @US3_ID;
+    SET l_allowed = 1;
 
   END IF;
 
