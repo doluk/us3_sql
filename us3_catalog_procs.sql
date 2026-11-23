@@ -14,6 +14,59 @@
 --
 -- Run as us3admin
 --
+-- Results and status codes
+-- ------------------------
+-- Every procedure here returns a one-column "status" result set first.
+-- Only when that status is @OK (0) does a second result set with the data
+-- follow; any other status comes alone.  Callers read the data columns by
+-- position, so the column order and count of each data set is part of the
+-- interface and must not change.
+--
+-- The status values a caller can see are:
+--
+--   @OK (0)               the data set follows.  It can be empty; see below.
+--   @NOROWS (301)         get_rawData_by_experiment and
+--                         get_editedData_by_experiment only: the caller may
+--                         read the experiment, but it has no rawData /
+--                         editedData.  No data set follows.
+--   @NOTPERMITTED (201)   an ordinary user named another investigator, or
+--                         asked about an experiment that is not theirs.
+--   @NO_EXPERIMENT (508)  the *_by_experiment procedures: no such experiment.
+--   @NO_ACCT (102), @BADPASS (104), @INACTIVE (103)
+--                         the login itself failed (from check_user).
+--
+-- "Nothing there" is reported in two ways, and both are kept as they are
+-- because clients depend on them:
+--
+--   - get_rawData_by_experiment and get_editedData_by_experiment answer
+--     NOROWS, as the single-record procedures they stand in for
+--     (get_rawData, get_editedData) do;
+--   - get_experiment_summary, get_model_desc_by_experiment,
+--     get_noise_desc_by_experiment, get_rawData_by_person and
+--     get_editedData_by_person answer OK with an empty data set.
+--
+-- A caller must treat NOROWS and "OK, but no rows" alike, as
+-- US_DataCatalog in UltraScan3 does.
+--
+-- Whose records are counted and listed
+-- ------------------------------------
+-- p_ID names the investigator.  An administrator (userlevel >= @US3_ADMIN)
+-- may name anyone, and p_ID = 0 means every investigator.  Anyone else is
+-- held to their own records: get_experiment_summary and the *_by_person
+-- procedures refuse a p_ID other than 0 or the caller's own ID, and the
+-- model and noise procedures ignore p_ID and use the caller's ID.
+--
+-- Experiments, raw data and edits belong to an investigator through
+-- experimentPerson; models through modelPerson; a noise record through the
+-- modelPerson row of the model it was fitted with (noise.modelID).  A model
+-- or noise record without a modelPerson row is listed, and counted, for
+-- nobody, and so is an experiment without an experimentPerson row -- even
+-- for an administrator passing p_ID = 0, although an administrator can
+-- still open such an experiment with the *_by_experiment procedures.
+--
+-- An experiment may have several experimentPerson rows; every procedure
+-- here still returns each record once.
+--
 
 DELIMITER $$
 
@@ -34,6 +87,15 @@ DELIMITER $$
 --
 -- experimentPerson is tested with EXISTS, not joined, so an experiment
 -- linked to several people is still one row when an admin passes p_ID = 0.
+--
+-- The counts are correlated subqueries on purpose.  Each one is a handful
+-- of index lookups for its experiment.  On MySQL 8.0, per-table derived
+-- tables grouped by experiment were no faster, for one investigator or for
+-- a whole database (5,000 experiments, 150,000 triples: 1.21 s against
+-- 1.18 s).  A single join of every table counted with COUNT(DISTINCT) was
+-- faster on that evenly spread test data, but it multiplies an edit's
+-- models by its noise records, and Monte Carlo fits put hundreds of each on
+-- one edit.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_experiment_summary$$
 CREATE PROCEDURE get_experiment_summary ( p_personGUID CHAR(36),
@@ -133,6 +195,8 @@ END$$
 -- caller whether the database copy and a local file still agree, so it is
 -- computed here; that means this reads the experiment's data blobs, and it
 -- is why a scan only asks for it one experiment at a time.
+--
+-- An experiment without raw data answers NOROWS; see the file header.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_rawData_by_experiment$$
 CREATE PROCEDURE get_rawData_by_experiment ( p_personGUID   CHAR(36),
@@ -189,6 +253,8 @@ END$$
 -- Every editedData record of one experiment, whichever triple it belongs
 -- to.  rawDataGUID comes along so a caller can attach each edit to its
 -- triple without a second query.
+--
+-- An experiment without edits answers NOROWS; see the file header.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_editedData_by_experiment$$
 CREATE PROCEDURE get_editedData_by_experiment ( p_personGUID   CHAR(36),
@@ -247,7 +313,8 @@ END$$
 -- the same code.
 --
 -- modelPerson's primary key is modelID, so joining it cannot repeat a
--- model, whatever p_ID is.
+-- model, whatever p_ID is.  No models answers OK with an empty data set;
+-- see the file header.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_model_desc_by_experiment$$
 CREATE PROCEDURE get_model_desc_by_experiment ( p_personGUID   CHAR(36),
@@ -303,6 +370,10 @@ END$$
 -- ----------------------------------------------------------------------
 -- Every noise record belonging to any edit of one experiment.  The columns
 -- are the ones get_noise_desc_by_editID returns.
+--
+-- A noise record is the investigator's when the model it was fitted with
+-- (noise.modelID) has a modelPerson row for them.  No noise answers OK
+-- with an empty data set; see the file header.
 -- ----------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS get_noise_desc_by_experiment$$
 CREATE PROCEDURE get_noise_desc_by_experiment ( p_personGUID   CHAR(36),
