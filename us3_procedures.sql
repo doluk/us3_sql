@@ -684,6 +684,10 @@ DELIMITER $$
 --      edit's experiment and refuses to take GMP or other investigators'
 --      records along; the autoflow procedures that insert a row with the
 --      caller's key report that key.  See readme.txt.
+--   2  as 1, plus clear_experiment_fields (us3_exp_procs.sql), which sets
+--      an experiment's centrifugeProtocol and/or RIProfile to NULL, and
+--      set_rotor_calibration_date (us3_hardware_procs.sql), which sets a
+--      rotor calibration's dateUpdated.  No existing procedure changed.
 --
 -- Raise the number whenever a change to the procedures is one a client
 -- may need to tell apart, and add a line here and in readme.txt.  It says
@@ -696,7 +700,7 @@ CREATE FUNCTION us3_catalog_version()
   NO SQL
 
 BEGIN
-  RETURN( 1 );
+  RETURN( 2 );
 
 END$$
 

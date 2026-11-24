@@ -12,7 +12,10 @@
 # broken, the locking read of the highest component ID back, the retries
 # gone, a stale ID reported; in the autoflow procedures that insert a row
 # with the caller's key, a stale ID reported, or one for a record that was
-# not copied; the version marker wrong, or left behind by a failed load.
+# not copied; in clear_experiment_fields and set_rotor_calibration_date a
+# permission or not-found check dropped, the wrong field cleared, '' or
+# NOW() stored instead of NULL or the date given, the range check gone;
+# the version marker wrong, or left behind by a failed load.
 # For each one this writes a broken copy of the file, runs the test that
 # covers it with that copy loaded over the real one -- catalog_smoke.sh
 # (SMOKE_CATALOG) for us3_catalog_procs.sql, write_procs_test.sh
@@ -89,7 +92,18 @@ af-abde-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowAnalysisABDEStage
 af-velmwl-stale-id	us3_autoflow_procs.sql	s/SET \@LAST_INSERT_ID = p_autoflowID;/SET \@LAST_INSERT_ID = LAST_INSERT_ID();/
 af-esign-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)SET \@LAST_INSERT_ID = p_ID;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
 af-esign-no-rowcount	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)IF \( ROW_COUNT\(\) > 0 \) THEN/$1IF ( 1 ) THEN/s
-version-wrong	us3_procedures.sql	s/RETURN\( 1 \);/RETURN( 0 );/
+version-wrong	us3_procedures.sql	s/RETURN\( 2 \);/RETURN( 1 );/
+clear-magic-experiment-1	us3_exp_procs.sql	s/ELSEIF \( verify_catalog_experiment\( p_experimentID \) != \@OK \) THEN/ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != \@OK ) THEN/
+clear-no-permission	us3_exp_procs.sql	s/ELSEIF \( verify_catalog_experiment\( p_experimentID \) != \@OK \) THEN/ELSEIF ( 0 ) THEN/
+clear-no-verify-first	us3_exp_procs.sql	s/(PROCEDURE clear_experiment_fields.*?)SET l_status = verify_user\( p_personGUID, p_password \);/$1SET l_status = 0;/s
+clear-swapped-flags	us3_exp_procs.sql	s/IF\( COALESCE\( p_clearProtocol,  0 \) != 0, NULL, centrifugeProtocol \)/IF( COALESCE( p_clearRIProfile, 0 ) != 0, NULL, centrifugeProtocol )/
+clear-empty-not-null	us3_exp_procs.sql	s/!= 0, NULL, RIProfile \)/!= 0, '', RIProfile )/
+clear-both-always	us3_exp_procs.sql	s/IF\( COALESCE\( p_clearProtocol,  0 \) != 0, NULL, centrifugeProtocol \)/NULL/
+caldate-any-user	us3_hardware_procs.sql	s/verify_userlevel\( p_personGUID, p_password, \@US3_ADMIN \) = \@OK \) THEN\n    SELECT COUNT\(\*\)\n    INTO   l_count/verify_userlevel( p_personGUID, p_password, \@US3_ANALYST ) = \@OK ) THEN\n    SELECT COUNT(*)\n    INTO   l_count/
+caldate-no-not-found	us3_hardware_procs.sql	s/IF \( l_count = 0 \) THEN\n      SET \@US3_LAST_ERRNO = \@NO_CALIB;/IF ( 0 ) THEN\n      SET \@US3_LAST_ERRNO = \@NO_CALIB;/
+caldate-now	us3_hardware_procs.sql	s/dateUpdated        = p_dateUpdated/dateUpdated        = NOW()/
+caldate-no-range-check	us3_hardware_procs.sql	s/COALESCE\( UNIX_TIMESTAMP\( p_dateUpdated \), 0 \) NOT BETWEEN 1 AND 2147483647/0/
+caldate-null-ignored	us3_hardware_procs.sql	s/dateUpdated        = p_dateUpdated/dateUpdated        = COALESCE( p_dateUpdated, dateUpdated )/
 version-dropped-last	us3_procedures.sql	s/(DROP FUNCTION IF EXISTS us3_catalog_version\$\$)(.*?)(CREATE FUNCTION us3_catalog_version)/$2$1\n$3/s
 EOF
 )

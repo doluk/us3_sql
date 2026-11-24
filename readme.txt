@@ -159,7 +159,8 @@ answers the version of the procedures loaded:
 
   0  (no such function) procedures from before these changes;
   1  the catalog procedures, and create_buffer_component,
-     delete_editedData and the autoflow inserts as described above.
+     delete_editedData and the autoflow inserts as described above;
+  2  as 1, plus two new procedures (below); no other procedure changed.
 
 A client asks with "SELECT us3_catalog_version()" and takes error 1305
 (the function does not exist) or 1370 (no EXECUTE privilege on it) as 0.
@@ -178,3 +179,31 @@ says only that the load ran to the end: check its output for errors.
 Loading one of the sourced files on its own does not change it.  Raise the number, in us3_procedures.sql and
 here, with every change to the procedures a client may need to tell
 apart.
+
+
+New in version 2: clear_experiment_fields, set_rotor_calibration_date
+
+No existing procedure's parameters changed (the LIMS calls them).  Two
+procedures were added for clients that copy records from elsewhere --
+UltraScan3's data import -- and must keep what update_experiment and
+add_rotor_calibration cannot store:
+
+  clear_experiment_fields( personGUID, password, experimentID,
+                           clearProtocol, clearRIProfile )
+    sets experiment.centrifugeProtocol and/or RIProfile to NULL
+    (update_experiment stores '' for NULL).  Allowed to an administrator
+    and to anyone with an experimentPerson row for the experiment
+    (verify_catalog_experiment; experiment 1 gets no special treatment).
+    Status 0, the login's codes, 201 or 508.
+
+  set_rotor_calibration_date( personGUID, password, rotorCalibrationID,
+                              dateUpdated )
+    sets rotorCalibration.dateUpdated (add_rotor_calibration stores the
+    time of the call), in the connection's time zone; NULL stores NULL.
+    Administrators only, as add_rotor_calibration.  Status 0, the
+    login's codes, 201, 519 (no such calibration), or -1 for a date
+    outside the TIMESTAMP range.
+
+A client calls them, inside its transaction, only when
+us3_catalog_version() is 2 or more; otherwise it keeps the old behaviour
+and says what it could not preserve.

@@ -1807,5 +1807,84 @@ BEGIN
 
 END$$
 
-DELIMITER ;
+-- Sets rotorCalibration.dateUpdated of calibration p_rotorCalibrationID
+-- to p_dateUpdated.  add_rotor_calibration always stores the time of the
+-- call, so a client that copies a calibration from elsewhere --
+-- UltraScan3's data import does -- calls add_rotor_calibration and then
+-- this to keep the original date.  The column is a TIMESTAMP: the value
+-- is taken, and read back, in the connection's time zone, and a time
+-- outside the TIMESTAMP range (1970-01-01 00:00:01 to 2038-01-19
+-- 03:14:07 UTC) is refused with @ERROR, changing nothing, whatever the
+-- sql_mode.  A NULL p_dateUpdated stores NULL (the column allows it).
+--
+-- Who may: an administrator (userlevel 3 or more), as for
+-- add_rotor_calibration.  Status (also in @US3_LAST_ERRNO): @OK; the
+-- login's codes (@EMPTY, @NO_ACCT, @INACTIVE, @BADPASS); @NOTPERMITTED (201)
+-- below userlevel 3; @NO_CALIB (519) when no calibration has that ID;
+-- @ERROR (-1) when the date is out of range or the server refuses it,
+-- the reason in @US3_LAST_ERROR.
+--
+-- Added with us3_catalog_version() 2.
+DROP PROCEDURE IF EXISTS set_rotor_calibration_date$$
+CREATE PROCEDURE set_rotor_calibration_date ( p_personGUID          CHAR(36),
+                                              p_password            VARCHAR(80),
+                                              p_rotorCalibrationID  INT,
+                                              p_dateUpdated         DATETIME )
+  MODIFIES SQL DATA
 
+BEGIN
+  DECLARE l_count   INT     DEFAULT 0;
+  DECLARE l_errno   INT     DEFAULT 0;
+  DECLARE l_message TEXT    DEFAULT '';
+
+  -- A value the TIMESTAMP column cannot hold (1292 in strict mode, 1264
+  -- out of range); nothing has changed
+  DECLARE EXIT HANDLER FOR 1292, 1264
+  BEGIN
+    GET DIAGNOSTICS CONDITION 1
+      l_errno = MYSQL_ERRNO, l_message = MESSAGE_TEXT;
+    SET @US3_LAST_ERRNO = @ERROR;
+    SET @US3_LAST_ERROR = CONCAT( 'MySQL: the calibration date was not set: error ',
+                                  l_errno, ': ', l_message );
+    SELECT @US3_LAST_ERRNO AS status;
+  END;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  IF ( verify_userlevel( p_personGUID, p_password, @US3_ADMIN ) = @OK ) THEN
+    SELECT COUNT(*)
+    INTO   l_count
+    FROM   rotorCalibration
+    WHERE  rotorCalibrationID = p_rotorCalibrationID;
+
+    IF ( l_count = 0 ) THEN
+      SET @US3_LAST_ERRNO = @NO_CALIB;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: no rotor calibration with ID ',
+                                    COALESCE( p_rotorCalibrationID, 'NULL' ),
+                                    ' exists' );
+
+    ELSEIF ( p_dateUpdated IS NOT NULL AND
+             COALESCE( UNIX_TIMESTAMP( p_dateUpdated ), 0 ) NOT BETWEEN 1 AND 2147483647 ) THEN
+      -- Checked here, not left to the server: without strict mode it
+      -- would store 0000-00-00 00:00:00 with only a warning
+      SET @US3_LAST_ERRNO = @ERROR;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the calibration date was not set: ',
+                                    p_dateUpdated, ' is outside the range ',
+                                    'a TIMESTAMP can hold' );
+
+    ELSE
+      UPDATE rotorCalibration SET
+        dateUpdated        = p_dateUpdated
+      WHERE rotorCalibrationID = p_rotorCalibrationID;
+
+    END IF;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
+DELIMITER ;

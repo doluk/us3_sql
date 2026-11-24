@@ -8,7 +8,9 @@ write_procs_test.sh   live test of delete_editedData and of the procedures
                       that report a new record's ID (create_buffer_component,
                       add_buffer_component, and the autoflow ones that
                       insert a row with a key of their caller's), and of
-                      the version marker us3_catalog_version()
+                      the version marker us3_catalog_version(), and of
+                      clear_experiment_fields and
+                      set_rotor_calibration_date
 
 All of them run against a real server: they create a scratch database, load
 us3.sql, us3_procedures.sql and catalog_fixture.sql into it, and drop it
@@ -107,8 +109,13 @@ back, no or unbounded retries, the same ID retried, the old row-count ID,
 a duplicate reported as success or a stale ID; add_buffer_component
 reporting a stale ID; each of the five autoflow procedures the test calls
 reporting LAST_INSERT_ID() again, and the two copying ones reporting an ID
-when nothing was copied; the version marker in us3_procedures.sql
-answering 0, or dropped only just before it is created.  It prints
+when nothing was copied; clear_experiment_fields open to anyone on
+experiment 1 or to anyone at all, not logging in first, clearing the
+wrong field or both, or storing '' rather than NULL;
+set_rotor_calibration_date open to investigators, without its not-found
+or range check, storing NOW() or ignoring NULL; the version marker in
+us3_procedures.sql answering 1, or dropped only just before it is
+created.  It prints
 "caught" or "SURVIVED" for each, and exits 1 if any survived, 2 if a
 mutation no longer applies to its file.  Name mutations as arguments to
 run only those.  The whole set takes ten minutes or so.
@@ -143,7 +150,19 @@ components inside an open transaction, the other one at the same time --
 neither deadlocks and the IDs are distinct.  add_buffer_component reports
 0.
 
-us3_catalog_version() answers 1, and a load of us3_procedures.sql that
+clear_experiment_fields: refuses strangers, also for experiment 1, an
+investigator of other experiments, a bad password, userlevel 1 and an
+experiment that does not exist, changing nothing; with nothing to clear
+(0 or NULL) changes nothing; for the owner, the experiment's other
+investigator and an administrator sets centrifugeProtocol, RIProfile or
+both to NULL (not ''), each only when asked.
+
+set_rotor_calibration_date: refuses an investigator, a bad password and
+a calibration that does not exist (519), and dates before 1970 or after
+2038 (-1, with a message of its own, whatever the sql_mode), changing
+nothing; an administrator's date is stored as given, and so is NULL.
+
+us3_catalog_version() answers 2, and a load of us3_procedures.sql that
 fails half-way leaves no such function behind, not even one an earlier
 load created.  That holds for a client that stops at the first error, as
 the MySQL client does, also in a sourced file; the MariaDB client (10.11)

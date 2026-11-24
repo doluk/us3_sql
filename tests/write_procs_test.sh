@@ -37,8 +37,20 @@
 #       the other at the same time: no deadlock, distinct IDs;
 #     - reports 0 when it inserts nothing; add_buffer_component reports 0.
 #
+#   clear_experiment_fields (us3_exp_procs.sql)
+#     - who may: an administrator or someone on the experiment, also for
+#       experiment 1; strangers, bad logins and a missing experiment are
+#       refused and change nothing;
+#     - sets centrifugeProtocol and/or RIProfile to SQL NULL, each only
+#       when asked; with nothing asked, changes nothing.
+#
+#   set_rotor_calibration_date (us3_hardware_procs.sql)
+#     - administrators only; a missing calibration answers @NO_CALIB;
+#     - stores the date given, or NULL; refuses, changing nothing, a date
+#       a TIMESTAMP cannot hold.
+#
 #   us3_catalog_version() (us3_procedures.sql)
-#     - answers 1, and is gone after a load of us3_procedures.sql that
+#     - answers 2, and is gone after a load of us3_procedures.sql that
 #       failed half-way (with a client that stops at the error, as the
 #       MySQL client does; the MariaDB client goes on).
 #
@@ -627,9 +639,106 @@ check "... and the copy is there" "9701" \
 check "... a record that does not exist: nothing copied, no ID" \
       "0 0 104 0" "$( af 007 new_gmp_review_history_record 9799 )"
 
+echo "== clear_experiment_fields"
+
+# Fields of the experiments the calls may change, as one line
+EXPF="SELECT GROUP_CONCAT( CONCAT_WS( ':', experimentID,
+                                      IFNULL( centrifugeProtocol, 'NULL' ),
+                                      IFNULL( RIProfile, 'NULL' ) )
+                           ORDER BY experimentID )
+      FROM experiment WHERE experimentID IN ( 1, 9101, 9103 )"
+q "UPDATE experiment SET centrifugeProtocol = CONCAT( 'cp', experimentID ),
+                         RIProfile          = CONCAT( 'ri', experimentID )
+   WHERE  experimentID IN ( 1, 9101, 9103 )" > /dev/null
+EXPF_FULL="1:cp1:ri1,9101:cp9101:ri9101,9103:cp9103:ri9103"
+
+# cef <caller> <experimentID> <clearProtocol> <clearRIProfile> : the
+# status, last_errno() and last_error(), on one line
+cef()
+{
+   echo $( q "CALL clear_experiment_fields( $1, $2, $3, $4 );
+              SELECT last_errno(), last_error()" )
+}
+NOMOD="MySQL: you do not have permission to modify this experiment"
+
+check "fields set" "$EXPF_FULL" "$( q "$EXPF" )"
+check "a stranger is refused" "201 201 $NOMOD" "$( cef "$CAROL" 9101 1 1 )"
+check "... also for experiment 1" "201 201 $NOMOD" "$( cef "$CAROL" 1 1 1 )"
+check "... and so is another investigator of other experiments" \
+      "201 201 $NOMOD" "$( cef "$ALICE" 1 1 1 )"
+check "a bad password" "104 104" \
+      "$( echo $( q "CALL clear_experiment_fields( '00000000-0000-4000-8000-000000000902', 'x', 9101, 1, 1 );
+                     SELECT last_errno()" ) )"
+check "userlevel 1" "104" \
+      "$( q "CALL clear_experiment_fields( '00000000-0000-4000-8000-000000000907', 'frankpw', 9101, 1, 1 )" )"
+check "an experiment that does not exist" \
+      "508 508 MySQL: the specified experiment does not exist" \
+      "$( cef "$ADMIN" 99999 1 1 )"
+check "after the refusals nothing changed" "$EXPF_FULL" "$( q "$EXPF" )"
+
+check "nothing to clear (0, NULL): OK" "0 0" \
+      "$( echo $( q "CALL clear_experiment_fields( $ALICE, 9101, 0, NULL ); SELECT last_errno()" ) )"
+check "... and nothing changed" "$EXPF_FULL" "$( q "$EXPF" )"
+
+check "the owner clears the protocol of 9101" "0 0" "$( cef "$ALICE" 9101 1 0 )"
+check "... it is NULL, the RI profile stays" \
+      "1:cp1:ri1,9101:NULL:ri9101,9103:cp9103:ri9103" "$( q "$EXPF" )"
+check "the other investigator of 9101 clears its RI profile" "0 0" "$( cef "$BOB" 9101 0 1 )"
+check "... both NULL now" \
+      "1:cp1:ri1,9101:NULL:NULL,9103:cp9103:ri9103" "$( q "$EXPF" )"
+check "bob clears both of his experiment 1" "0 0" "$( cef "$BOB" 1 1 1 )"
+check "an administrator clears the RI profile of bob's 9103" "0 0" "$( cef "$ADMIN" 9103 0 1 )"
+check "... the protocol stays" \
+      "1:NULL:NULL,9101:NULL:NULL,9103:cp9103:NULL" "$( q "$EXPF" )"
+check "... then both" "0 0" "$( cef "$ADMIN" 9103 1 1 )"
+check "... all NULL; a SQL NULL, not ''" \
+      "1:NULL:NULL,9101:NULL:NULL,9103:NULL:NULL 3" \
+      "$( echo $( q "$EXPF; SELECT COUNT(*) FROM experiment
+                          WHERE experimentID IN ( 1, 9101, 9103 )
+                          AND centrifugeProtocol IS NULL AND RIProfile IS NULL" ) )"
+
+echo "== set_rotor_calibration_date"
+
+q "INSERT INTO rotorCalibration ( rotorCalibrationID, rotorID, rotorCalibrationGUID,
+                                  label, dateUpdated, calibrationExperimentID )
+     VALUES ( 9901, NULL, '00000000-0000-4000-8000-000000009901', 'smoke cal',
+              '2020-01-02 03:04:05', -1 )" > /dev/null
+CALDATE="SELECT IFNULL( dateUpdated, 'NULL' ) FROM rotorCalibration WHERE rotorCalibrationID = 9901"
+
+# rcd <caller> <ID> <date> : the status, last_errno() and last_error()
+rcd()
+{
+   echo $( q "CALL set_rotor_calibration_date( $1, $2, $3 );
+              SELECT last_errno(), last_error()" )
+}
+
+check "an investigator is refused" "201 201 MySQL: Not permitted at that userlevel" \
+      "$( rcd "$ALICE" 9901 "'2019-03-04 05:06:07'" )"
+check "a bad password" "104 104" \
+      "$( echo $( q "CALL set_rotor_calibration_date( '00000000-0000-4000-8000-000000000901', 'x', 9901, '2019-03-04 05:06:07' );
+                     SELECT last_errno()" ) )"
+check "a calibration that does not exist" \
+      "519 519 MySQL: no rotor calibration with ID 99999 exists" \
+      "$( rcd "$ADMIN" 99999 "'2019-03-04 05:06:07'" )"
+# Checked by the procedure itself, so the answer is the same whatever the
+# sql_mode the procedure was created in (without strict mode the server
+# would store a zero date with a warning)
+RANGE="MySQL: the calibration date was not set: 1960-01-01 00:00:00 is outside the range a TIMESTAMP can hold"
+check "a date before 1970: refused" "-1 -1 $RANGE" \
+      "$( rcd "$ADMIN" 9901 "'1960-01-01 00:00:00'" )"
+check "a date after 2038: refused" "-1 -1 ${RANGE/1960-01-01/2040-01-01}" \
+      "$( rcd "$ADMIN" 9901 "'2040-01-01 00:00:00'" )"
+check "after the refusals nothing changed" "2020-01-02 03:04:05" "$( q "$CALDATE" )"
+
+check "an administrator sets the date" "0 0" \
+      "$( rcd "$ADMIN" 9901 "'2019-03-04 05:06:07'" )"
+check "... which is stored" "2019-03-04 05:06:07" "$( q "$CALDATE" )"
+check "... and NULL" "0 | NULL" \
+      "$( echo $( q "CALL set_rotor_calibration_date( $ADMIN, 9901, NULL ); SELECT '|'; $CALDATE" ) )"
+
 echo "== us3_catalog_version"
 
-check "the version marker" "1" "$( q "SELECT us3_catalog_version()" )"
+check "the version marker" "2" "$( q "SELECT us3_catalog_version()" )"
 
 # Last, as it reloads the procedures: a load of us3_procedures.sql that
 # stops half-way (here in its last sourced file) leaves no marker behind,

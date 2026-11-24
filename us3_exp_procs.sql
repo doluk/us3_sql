@@ -1124,3 +1124,63 @@ BEGIN
 
 END$$
 
+-- Sets experiment.centrifugeProtocol (p_clearProtocol != 0) and/or
+-- experiment.RIProfile (p_clearRIProfile != 0) of experiment p_experimentID
+-- to NULL.  update_experiment cannot: it stores '' for a NULL argument
+-- of either (and '' for RIProfile whenever runType is not RI), so a
+-- client that copies an experiment whose fields are NULL -- UltraScan3's
+-- data import does -- calls update_experiment and then this.  A NULL
+-- flag counts as 0; with both 0 the call changes nothing and answers @OK.
+-- As for any UPDATE of experiment, dateUpdated becomes the time of the
+-- call when a field changes (ON UPDATE CURRENT_TIMESTAMP).
+--
+-- Who may: an administrator, or anyone with an experimentPerson row for
+-- the experiment -- verify_catalog_experiment() (us3_catalog_procs.sql),
+-- which, unlike verify_experiment_permission(), gives experiment 1 no
+-- special treatment.  Status (also in @US3_LAST_ERRNO): @OK; the login's
+-- codes (@EMPTY, @NO_ACCT, @INACTIVE, @BADPASS, also below userlevel 2);
+-- @NO_EXPERIMENT (508) when the experiment does not exist; @NOTPERMITTED
+-- (201) when the caller may not modify it.
+--
+-- Added with us3_catalog_version() 2.
+DROP PROCEDURE IF EXISTS clear_experiment_fields$$
+CREATE PROCEDURE clear_experiment_fields ( p_personGUID      CHAR(36),
+                                           p_password        VARCHAR(80),
+                                           p_experimentID    INT,
+                                           p_clearProtocol   TINYINT,
+                                           p_clearRIProfile  TINYINT )
+  MODIFIES SQL DATA
+
+BEGIN
+  DECLARE l_status INT;
+
+  CALL config();
+  SET @US3_LAST_ERRNO = @OK;
+  SET @US3_LAST_ERROR = '';
+
+  -- verify_catalog_experiment() matches experimentPerson against @US3_ID
+  -- and @USERLEVEL, which verify_user() sets
+  SET l_status = verify_user( p_personGUID, p_password );
+
+  IF ( l_status != @OK ) THEN
+    -- check_user() has recorded why in @US3_LAST_ERROR
+    SET @US3_LAST_ERRNO = l_status;
+
+  ELSEIF ( verify_catalog_experiment( p_experimentID ) != @OK ) THEN
+    -- @NO_EXPERIMENT or @NOTPERMITTED
+    IF ( @US3_LAST_ERRNO = @NOTPERMITTED ) THEN
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to modify this experiment';
+    END IF;
+
+  ELSEIF ( COALESCE( p_clearProtocol, 0 ) != 0 OR COALESCE( p_clearRIProfile, 0 ) != 0 ) THEN
+    UPDATE experiment SET
+      centrifugeProtocol = IF( COALESCE( p_clearProtocol,  0 ) != 0, NULL, centrifugeProtocol ),
+      RIProfile          = IF( COALESCE( p_clearRIProfile, 0 ) != 0, NULL, RIProfile )
+    WHERE  experimentID  = p_experimentID;
+
+  END IF;
+
+  SELECT @US3_LAST_ERRNO AS status;
+
+END$$
+
