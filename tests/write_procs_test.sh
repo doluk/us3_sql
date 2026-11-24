@@ -37,6 +37,11 @@
 #       the other at the same time: no deadlock, distinct IDs;
 #     - reports 0 when it inserts nothing; add_buffer_component reports 0.
 #
+#   us3_catalog_version() (us3_procedures.sql)
+#     - answers 1, and is gone after a load of us3_procedures.sql that
+#       failed half-way (with a client that stops at the error, as the
+#       MySQL client does; the MariaDB client goes on).
+#
 #   the autoflow procedures that insert a row keyed by the caller's
 #   autoflowID or the ID of the record they copy (us3_autoflow_procs.sql)
 #     - report that key through last_insertID(), not the connection's
@@ -621,6 +626,34 @@ check "... and the copy is there" "9701" \
       "$( q "SELECT autoflowID FROM autoflowGMPReportEsignHistory WHERE ID = 9711" )"
 check "... a record that does not exist: nothing copied, no ID" \
       "0 0 104 0" "$( af 007 new_gmp_review_history_record 9799 )"
+
+echo "== us3_catalog_version"
+
+check "the version marker" "1" "$( q "SELECT us3_catalog_version()" )"
+
+# Last, as it reloads the procedures: a load of us3_procedures.sql that
+# stops half-way (here in its last sourced file) leaves no marker behind,
+# not even the one an earlier complete load created
+mkdir "$tmp/partial"
+for f in us3_procedures.sql us3_*_procs.sql; do
+   src="$root/$f"
+   for o in $OVERRIDE; do [ "$( basename "$o" )" = "$f" ] && src=$o; done
+   ln -s "$src" "$tmp/partial/$f"
+done
+rm "$tmp/partial/us3_refscan_procs.sql"
+echo "SELECT no_such_column;" > "$tmp/partial/us3_refscan_procs.sql"
+if ( cd "$tmp/partial" && $MYSQL "$DB" -e "SOURCE us3_procedures.sql" > /dev/null 2>&1 ); then
+   # The MariaDB client (10.11) reports an error in a sourced file, goes
+   # on with the next statement, and exits 0; the marker then says only
+   # that the file was run to its end
+   echo "note: this client went on after an error in a sourced file;" \
+        "the check that a failed load leaves no marker is skipped"
+else
+   check "a load that failed half-way: no marker" "ERROR" \
+         "$( q "SELECT us3_catalog_version()" | cut -c1-5 )"
+   check "... and the client's error is 1305" "1" \
+         "$( q "SELECT us3_catalog_version()" | grep -c ' 1305 ' )"
+fi
 
 echo "== $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

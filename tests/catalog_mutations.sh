@@ -12,11 +12,12 @@
 # broken, the locking read of the highest component ID back, the retries
 # gone, a stale ID reported; in the autoflow procedures that insert a row
 # with the caller's key, a stale ID reported, or one for a record that was
-# not copied.  For each one this writes a broken copy of the
-# file, runs the test that covers it with that copy loaded over the real
-# one -- catalog_smoke.sh (SMOKE_CATALOG) for us3_catalog_procs.sql,
-# write_procs_test.sh (WRITE_OVERRIDE) for the others -- and expects the
-# test to FAIL.  A mutation the test passes is a hole in it.
+# not copied; the version marker wrong, or left behind by a failed load.
+# For each one this writes a broken copy of the file, runs the test that
+# covers it with that copy loaded over the real one -- catalog_smoke.sh
+# (SMOKE_CATALOG) for us3_catalog_procs.sql, write_procs_test.sh
+# (WRITE_OVERRIDE) for the others -- and expects the test to FAIL.  A
+# mutation the test passes is a hole in it.
 #
 # Usage, from anywhere, with MYSQL (and SMOKE_DB, WRITE_DB) as for the
 # tests:
@@ -88,6 +89,8 @@ af-abde-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowAnalysisABDEStage
 af-velmwl-stale-id	us3_autoflow_procs.sql	s/SET \@LAST_INSERT_ID = p_autoflowID;/SET \@LAST_INSERT_ID = LAST_INSERT_ID();/
 af-esign-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)SET \@LAST_INSERT_ID = p_ID;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
 af-esign-no-rowcount	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)IF \( ROW_COUNT\(\) > 0 \) THEN/$1IF ( 1 ) THEN/s
+version-wrong	us3_procedures.sql	s/RETURN\( 1 \);/RETURN( 0 );/
+version-dropped-last	us3_procedures.sql	s/(DROP FUNCTION IF EXISTS us3_catalog_version\$\$)(.*?)(CREATE FUNCTION us3_catalog_version)/$2$1\n$3/s
 EOF
 )
 

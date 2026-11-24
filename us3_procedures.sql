@@ -7,6 +7,14 @@
 
 DELIMITER $$
 
+-- The version marker us3_catalog_version() (at the end of this file) is
+-- dropped first and created last, so that it exists only when the load
+-- got that far.  The MySQL client stops at the first error, also in a
+-- sourced file, so with it the marker means that everything loaded.  The
+-- MariaDB client goes on after an error in a sourced file (and exits 0):
+-- with it, check the output for errors.
+DROP FUNCTION IF EXISTS us3_catalog_version$$
+
 -- Called by other procedures to set up environment
 DROP PROCEDURE IF EXISTS config$$
 CREATE PROCEDURE config()
@@ -662,5 +670,34 @@ SOURCE us3_protocol_procs.sql
 SOURCE us3_aprofile_procs.sql
 SOURCE us3_autoflow_procs.sql
 SOURCE us3_refscan_procs.sql
+
+DELIMITER $$
+
+-- Which version of the procedures this database has, for clients whose
+-- behaviour depends on it.  An unpatched database has no such function:
+-- "SELECT us3_catalog_version()" fails there with error 1305 (1370 when
+-- the account may not execute it), which a client takes as version 0.
+--
+--   1  us3_catalog_procs.sql is loaded; create_buffer_component takes a
+--      free ID (not the row count plus one) and reports it through
+--      last_insertID(); delete_editedData is all or nothing, keeps to the
+--      edit's experiment and refuses to take GMP or other investigators'
+--      records along; the autoflow procedures that insert a row with the
+--      caller's key report that key.  See readme.txt.
+--
+-- Raise the number whenever a change to the procedures is one a client
+-- may need to tell apart, and add a line here and in readme.txt.  It says
+-- nothing about the tables (us3.sql).  Re-running one of the sourced files
+-- on its own does not change it: it describes the last complete load of
+-- this file.
+CREATE FUNCTION us3_catalog_version()
+  RETURNS INT
+  DETERMINISTIC
+  NO SQL
+
+BEGIN
+  RETURN( 1 );
+
+END$$
 
 DELIMITER ;

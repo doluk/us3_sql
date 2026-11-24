@@ -150,3 +150,31 @@ waits for that transaction, as for any duplicate key; giving
 bufferComponentID an AUTO_INCREMENT would remove that wait too, but is a
 schema change.  The header of each procedure has the details;
 tests/write_procs_test.sh checks them.
+
+
+Telling an updated database from an old one (us3_catalog_version)
+
+us3_procedures.sql creates the function us3_catalog_version(), which
+answers the version of the procedures loaded:
+
+  0  (no such function) procedures from before these changes;
+  1  the catalog procedures, and create_buffer_component,
+     delete_editedData and the autoflow inserts as described above.
+
+A client asks with "SELECT us3_catalog_version()" and takes error 1305
+(the function does not exist) or 1370 (no EXECUTE privilege on it) as 0.
+UltraScan3's data import, for example, can then skip its warning that a
+new buffer component may collide with an existing ID -- old
+create_buffer_component gave a new row the row count plus one -- and use
+the ID that last_insertID() reports after create_buffer_component, rather
+than finding the new row by its definition.  On version 0 it must keep
+doing both.
+
+The file drops the function first and creates it last, so a load that
+stops half-way leaves none behind.  The mysql client stops at the first
+error, also in a sourced file; the mariadb client (10.11) reports an
+error in a sourced file, goes on and exits 0, so with it the function
+says only that the load ran to the end: check its output for errors.
+Loading one of the sourced files on its own does not change it.  Raise the number, in us3_procedures.sql and
+here, with every change to the procedures a client may need to tell
+apart.
