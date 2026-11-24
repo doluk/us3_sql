@@ -161,9 +161,15 @@ a gap lock until it ended and deadlocked other connections creating
 components.  It reads it without locking, and when the ID is taken tries
 the next one, up to 100 times, before answering @INSERTDUP (402).  A
 connection whose ID another transaction has inserted but not committed
-waits for that transaction, as for any duplicate key; giving
-bufferComponentID an AUTO_INCREMENT would remove that wait too, but is a
-schema change.  The header of each procedure has the details;
+waits for that transaction, as for any duplicate key.  So while a long
+transaction that created a component is open -- UltraScan3's data import
+holds one for the whole import -- every other connection creating a
+component waits until it commits or rolls back, and fails with error
+1205 after innodb_lock_wait_timeout (50 s by default).  There is no
+deadlock, and the IDs stay distinct.  Only giving bufferComponentID an
+AUTO_INCREMENT would remove that wait (AUTO_INCREMENT values are not
+held to the end of the transaction); that is a schema change, left for
+now.  The header of each procedure has the details;
 tests/write_procs_test.sh checks them.
 
 
@@ -193,9 +199,47 @@ stops half-way leaves none behind.  The mysql client stops at the first
 error, also in a sourced file; the mariadb client (10.11) reports an
 error in a sourced file, goes on and exits 0, so with it the function
 says only that the load ran to the end: check its output for errors.
-Loading one of the sourced files on its own does not change it.  Raise the number, in us3_procedures.sql and
-here, with every change to the procedures a client may need to tell
-apart.
+Loading one of the sourced files on its own does not change it.  Raise
+the number, in us3_procedures.sql and here, with every change to the
+procedures a client may need to tell apart.
+
+The marker can therefore be stale -- say 2 while the procedures are
+older:
+
+  - after a load with --force (mysql --force, or the mariadb client,
+    which behaves so for sourced files): a file that failed leaves its
+    old procedures in place, or none, and the marker is created anyway;
+  - after loading an older copy of one of the sourced files on its own
+    (say us3_expdata_procs.sql from before version 1): the marker still
+    describes the last complete load of us3_procedures.sql;
+  - after loading an older us3_procedures.sql over a newer one, the
+    marker says the older version, but procedures that only the newer
+    one has (clear_experiment_fields, say) are still there.
+
+Load the whole of us3_procedures.sql, without --force, and check the
+output for errors.  A client should still handle error 1305 for a
+procedure it expects from the version.
+
+
+Server versions
+
+The procedures need MySQL 5.7.8 or later, or MariaDB 10.2.7 or later.
+delete_editedData uses JSON_VALID, JSON_EXTRACT, JSON_LENGTH and
+JSON_UNQUOTE, which came with MySQL 5.7.8 and MariaDB 10.2.3, and us3.sql
+declares autoflowModelsLink.modelsDesc as JSON, a type MariaDB has from
+10.2.7 (an alias for LONGTEXT; a CHECK ( JSON_VALID(...) ) since 10.4.3).
+Nothing needs JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).  The tests run on
+MySQL 8.0.46 and MariaDB 10.11 (tests/README).
+
+
+Upstream
+
+These changes are on top of the two commits that added
+us3_catalog_procs.sql to doluk/us3_sql ("Add per-experiment catalog
+procedures" and "Add bulk catalog procedures that do not hash the data
+blobs"), which ehb54/us3_sql does not have.  A pull request to
+ehb54/us3_sql must carry those two commits as well as the ones after
+them, or us3_procedures.sql sources a file that is not there.
 
 
 New in version 2: clear_experiment_fields, set_rotor_calibration_date
