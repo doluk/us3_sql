@@ -1370,33 +1370,142 @@ BEGIN
 
 END$$
 
+-- Is model p_modelID one the GMP framework refers to?  1 when an
+-- autoflowModelsLink row lists its modelID under 2DSA_IT, 2DSA_MC or PCSA
+-- in modelsDesc -- the keys UltraScan3 reads it from
+-- (US_ModelGui::is_modelIDs_from_autoflow); the ID may be stored as a
+-- string or as a number.  0 otherwise.
+DROP FUNCTION IF EXISTS model_in_autoflow$$
+CREATE FUNCTION model_in_autoflow( p_modelID INT )
+  RETURNS TINYINT
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_as_text   JSON;
+  DECLARE l_as_number JSON;
+
+  SET l_as_text   = JSON_OBJECT( 'modelID', CAST( p_modelID AS CHAR ) );
+  SET l_as_number = JSON_OBJECT( 'modelID', p_modelID );
+
+  RETURN EXISTS
+    ( SELECT 1
+      FROM   autoflowModelsLink
+      WHERE  JSON_CONTAINS( modelsDesc, l_as_text,   '$."2DSA_IT"' )
+      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$."2DSA_IT"' )
+      OR     JSON_CONTAINS( modelsDesc, l_as_text,   '$."2DSA_MC"' )
+      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$."2DSA_MC"' )
+      OR     JSON_CONTAINS( modelsDesc, l_as_text,   '$.PCSA' )
+      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$.PCSA' ) );
+
+END$$
+
+-- Is model p_modelID another investigator's, as far as the caller verified
+-- last in this connection is concerned?  1 when the caller is not an
+-- administrator, has no modelPerson row for the model, and somebody else
+-- has one.  A model with no modelPerson row at all is nobody's: 0.
+--
+-- It reads @US3_ID and @USERLEVEL, which check_user() sets, and
+-- @US3_ADMIN, which config() sets, so the caller must have been verified
+-- in the same procedure call first.  The modelPerson rows are read with a
+-- locking read (shared), so that inside a REPEATABLE READ transaction it
+-- answers for the rows as they are, not as the transaction's snapshot has
+-- them.
+DROP FUNCTION IF EXISTS model_of_other_investigator$$
+CREATE FUNCTION model_of_other_investigator( p_modelID INT )
+  RETURNS TINYINT
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_mine   INT DEFAULT 0;
+  DECLARE l_others INT DEFAULT 0;
+
+  IF ( @USERLEVEL >= @US3_ADMIN ) THEN
+    RETURN 0;
+  END IF;
+
+  SELECT SUM( personID = @US3_ID ), SUM( personID != @US3_ID )
+  INTO   l_mine, l_others
+  FROM   modelPerson
+  WHERE  modelID = p_modelID
+  LOCK IN SHARE MODE;
+
+  RETURN ( COALESCE( l_mine, 0 ) = 0 AND COALESCE( l_others, 0 ) > 0 );
+
+END$$
+
 -- DELETEs an edit profile, plus the records that depend on it:
 --   - its report documents (and their document links);
 --   - every noise record computed from it (noise.editedDataID), whichever
 --     model it was fitted with -- a global fit's noise names a model of
---     another edit, and it is this edit's noise all the same.  This
---     includes noise fitted with another investigator's model: it cannot
---     outlive the edit it was computed from (the noise table's foreign key
---     forbids it);
+--     another edit, and it is this edit's noise all the same (the noise
+--     table's foreign key forbids it to outlive the edit);
 --   - every noise record fitted with one of its models, whichever edit it
 --     was computed from;
 --   - its models (and their modelPerson rows) and pcsa_modelrecs.
 --
--- All or nothing.  The deletes run in a transaction of their own when the
--- caller is not in one; inside a caller's transaction (a client may wrap
--- several writes in one, as UltraScan's import does) they run under a
--- savepoint instead, since START TRANSACTION would commit the caller's
--- transaction.  If any of them fails, everything this call deleted is
--- rolled back (to the savepoint, leaving the caller's transaction open
--- with its own work), and the status says why: @CONSTRAINT_FAILED for a
--- foreign key that still refers to the edit, @ERROR for anything else,
--- with the server's message in @US3_LAST_ERROR.  A deadlock is the one
--- failure that can take a caller's whole transaction with it; the server
--- rolls that back itself, and the message says so.
+-- Who may delete it
+--   An administrator, or anyone with an experimentPerson row for the
+--   edit's experiment (verify_catalog_experiment(), us3_catalog_procs.sql),
+--   the same for every experiment.  It used verify_editData_permission(),
+--   which lets anybody modify experiment 1, a "magic" ID that is a real
+--   experiment of some investigator on many servers.  Otherwise
+--   @NOTPERMITTED; @NO_EDITDATA when the edit does not exist, and
+--   @NO_EXPERIMENT when its experiment does not.  The special "UNASSIGNED"
+--   edit (editedDataID 1) cannot be deleted at all (@NOTPERMITTED): every
+--   investigator's models may be linked to it.
 --
--- The special "UNASSIGNED" edit (editedDataID 1) cannot be deleted:
--- verify_editData_permission() lets anybody use it, and deleting it would
--- delete every investigator's models that are linked to it.
+-- What it will not take along (@NOTPERMITTED, nothing deleted)
+--   An ordinary user's listings show only that user's own models and noise,
+--   so a client cannot show, or check, what else an edit removal would
+--   take.  The call is therefore refused, and the message names the
+--   records, when the models or noise it would delete include
+--     - a model the GMP framework refers to (model_in_autoflow():
+--       autoflowModelsLink lists it), or noise fitted with one -- for
+--       everybody, administrators included;
+--     - for anyone but an administrator, a model of another investigator
+--       (model_of_other_investigator(): somebody else's modelPerson row,
+--       none of the caller's), or noise fitted with one.
+--   A model with no modelPerson row is nobody's and does not stop the
+--   removal.  The models and noise in question, and their modelPerson
+--   rows, are read with locking reads inside the transaction (or
+--   savepoint) the deletes run in, so they are checked as they are -- also
+--   inside a caller's REPEATABLE READ transaction whose snapshot is older
+--   -- and noise another connection records against the edit meanwhile
+--   waits for the call to end.  autoflowModelsLink is read without
+--   locking (a locking read would lock the whole table): inside a caller's
+--   transaction a GMP link committed after its snapshot was taken is not
+--   seen.  On a refusal inside a caller's transaction the locks stay until
+--   that transaction ends (InnoDB keeps row locks across ROLLBACK TO
+--   SAVEPOINT).
+--
+-- All or nothing
+--   The deletes run in a transaction of their own when the caller is not
+--   in one; inside a caller's transaction (a client may wrap several writes
+--   in one, as UltraScan3 does when it removes an edit) they run under the
+--   savepoint us3_delete_editedData_sp instead, since START TRANSACTION
+--   would commit the caller's transaction.  With autocommit off there is
+--   always a transaction, and the caller commits it.  If a delete fails,
+--   everything this call deleted is rolled back (to the savepoint, leaving
+--   the caller's transaction open with its own work), and the status says
+--   why: @CONSTRAINT_FAILED for a foreign key that still refers to the
+--   edit, @ERROR for anything else (a read-only transaction, say), with
+--   the server's message in @US3_LAST_ERROR.
+--
+-- Deadlocks
+--   A deadlock (1213) makes the server roll back the whole transaction.
+--   In a transaction of its own that only undoes this call: the status is
+--   @ERROR, and the call can be repeated.  Inside a caller's transaction it
+--   also undoes everything the caller did before; that is not reported as
+--   a status but raised again as error 1213 (SQLSTATE 40001), as for any
+--   other statement that deadlocks, so that a client cannot take it for an
+--   ordinary refusal and carry on in a transaction that is gone.  The
+--   same goes for any other error after which the savepoint is gone (a
+--   lock wait timeout with innodb_rollback_on_timeout on).  @US3_LAST_ERRNO
+--   is then @ERROR and @US3_LAST_ERROR says what happened.
+--
+-- Another investigator's models fitted to this edit, and their noise, are
+-- deleted with it when an administrator deletes it; a model with no
+-- modelPerson row always is.
 DROP PROCEDURE IF EXISTS delete_editedData$$
 CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
                                      p_password     VARCHAR(80),
@@ -1404,11 +1513,20 @@ CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
   MODIFIES SQL DATA
 
 BEGIN
-  DECLARE l_in_trx   TINYINT DEFAULT 1;
-  DECLARE l_started  TINYINT DEFAULT 0;
-  DECLARE l_errno    INT     DEFAULT 0;
-  DECLARE l_message  TEXT    DEFAULT '';
-  DECLARE l_status   INT;
+  DECLARE l_in_trx         TINYINT DEFAULT 1;
+  DECLARE l_started        TINYINT DEFAULT 0;
+  DECLARE l_lost           TINYINT DEFAULT 0;
+  DECLARE l_errno          INT     DEFAULT 0;
+  DECLARE l_message        TEXT    DEFAULT '';
+  DECLARE l_status         INT;
+  DECLARE l_count_edits    INT     DEFAULT 0;
+  DECLARE l_experimentID   INT     DEFAULT NULL;
+  DECLARE l_gmp_models     TEXT    DEFAULT NULL;
+  DECLARE l_other_models   TEXT    DEFAULT NULL;
+  DECLARE l_gmp_noise      TEXT    DEFAULT NULL;
+  DECLARE l_other_noise    TEXT    DEFAULT NULL;
+  DECLARE l_gmp_noise2     TEXT    DEFAULT NULL;
+  DECLARE l_other_noise2   TEXT    DEFAULT NULL;
 
   DECLARE EXIT HANDLER FOR SQLEXCEPTION
   BEGIN
@@ -1416,26 +1534,52 @@ BEGIN
       l_errno = MYSQL_ERRNO, l_message = MESSAGE_TEXT;
 
     IF ( l_started = 1 ) THEN
-      BEGIN
-        -- After a deadlock the server has already rolled back the whole
-        -- transaction, savepoint and all; there is nothing left to undo
-        DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
-          SET l_message = CONCAT( l_message,
-                                  ' (the transaction was rolled back)' );
+      IF ( l_errno = 1213 ) THEN
+        -- The server has rolled back the whole transaction, savepoint and
+        -- all; there is nothing left to undo
+        SET l_lost = l_in_trx;
 
-        IF ( l_in_trx = 1 ) THEN
-          ROLLBACK TO SAVEPOINT delete_editedData;
-          RELEASE SAVEPOINT delete_editedData;
-        ELSE
-          ROLLBACK;
-        END IF;
-      END;
+      ELSEIF ( l_in_trx = 1 ) THEN
+        BEGIN
+          -- The savepoint is gone when the server rolled the transaction
+          -- back itself
+          DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_lost = 1;
+          ROLLBACK TO SAVEPOINT us3_delete_editedData_sp;
+          IF ( l_lost = 0 ) THEN
+            RELEASE SAVEPOINT us3_delete_editedData_sp;
+          END IF;
+        END;
+
+      ELSE
+        ROLLBACK;
+
+      END IF;
+    END IF;
+
+    SET @US3_LAST_ERRNO = @ERROR;
+
+    IF ( l_lost = 1 ) THEN
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: error ',
+                                    l_errno, ': ', l_message, ' -- the server ',
+                                    'rolled back the whole transaction, with ',
+                                    'everything done in it before this call' );
+
+      IF ( l_errno = 1213 ) THEN
+        SIGNAL SQLSTATE '40001'
+          SET MYSQL_ERRNO  = 1213,
+              MESSAGE_TEXT = 'delete_editedData: deadlock; the server rolled back the whole transaction, the caller''s earlier work too';
+      ELSE
+        SET l_message = LEFT( CONCAT( 'delete_editedData: the server rolled back the whole transaction: ',
+                                      l_message ), 128 );
+        SIGNAL SQLSTATE 'HY000'
+          SET MYSQL_ERRNO  = l_errno,
+              MESSAGE_TEXT = l_message;
+      END IF;
+
     END IF;
 
     IF ( l_errno IN ( 1451, 1452 ) ) THEN
       SET @US3_LAST_ERRNO = @CONSTRAINT_FAILED;
-    ELSE
-      SET @US3_LAST_ERRNO = @ERROR;
     END IF;
 
     SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted, and nothing ',
@@ -1450,10 +1594,15 @@ BEGIN
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  -- verify_experiment_permission(), behind verify_editData_permission(),
-  -- matches experimentPerson against @US3_ID before it verifies the
-  -- caller, so the caller is verified first, here
+  -- verify_catalog_experiment() matches experimentPerson against @US3_ID
+  -- and @USERLEVEL, which verify_user() sets
   SET l_status = verify_user( p_personGUID, p_password );
+
+  SELECT     COUNT(*), MAX( r.experimentID )
+  INTO       l_count_edits, l_experimentID
+  FROM       editedData d
+  LEFT JOIN  rawData r ON ( r.rawDataID = d.rawDataID )
+  WHERE      d.editedDataID = p_editedDataID;
 
   IF ( l_status != @OK ) THEN
     -- check_user() has recorded why in @US3_LAST_ERROR
@@ -1463,7 +1612,17 @@ BEGIN
     SET @US3_LAST_ERRNO = @NOTPERMITTED;
     SET @US3_LAST_ERROR = 'MySQL: the UNASSIGNED edit profile cannot be deleted';
 
-  ELSEIF ( verify_editData_permission( p_personGUID, p_password, p_editedDataID ) = @OK ) THEN
+  ELSEIF ( l_count_edits = 0 ) THEN
+    SET @US3_LAST_ERRNO = @NO_EDITDATA;
+    SET @US3_LAST_ERROR = 'MySQL: no edit profile with that ID exists';
+
+  ELSEIF ( verify_catalog_experiment( l_experimentID ) != @OK ) THEN
+    -- @NO_EXPERIMENT or @NOTPERMITTED
+    IF ( @US3_LAST_ERRNO = @NOTPERMITTED ) THEN
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to modify this experiment';
+    END IF;
+
+  ELSE
 
     -- Is the caller in a transaction?  A savepoint outlives the statement
     -- that set it only inside one; outside, autocommit ends it at once and
@@ -1471,50 +1630,120 @@ BEGIN
     -- MySQL does not have it.)
     BEGIN
       DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 0;
-      SAVEPOINT delete_editedData;
-      RELEASE SAVEPOINT delete_editedData;
+      SAVEPOINT us3_delete_editedData_sp;
+      RELEASE SAVEPOINT us3_delete_editedData_sp;
     END;
 
     IF ( l_in_trx = 1 ) THEN
-      SAVEPOINT delete_editedData;
+      SAVEPOINT us3_delete_editedData_sp;
     ELSE
       START TRANSACTION;
     END IF;
     SET l_started = 1;
 
-    -- Children before parents, so that no foreign key is checked against a
-    -- row that is about to go
-    DELETE      reportDocument, documentLink
-    FROM        reportDocument
-    LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
-    WHERE       reportDocument.editedDataID = p_editedDataID;
+    -- What would go that must not: the edit's models, the noise computed
+    -- from the edit, and the noise fitted with its models -- read with
+    -- locking reads, which see what is committed now even under the
+    -- snapshot of a caller's REPEATABLE READ transaction.  They lock only
+    -- rows the deletes below lock anyway.
+    SELECT     GROUP_CONCAT( IF( model_in_autoflow( modelID ) = 1, modelID, NULL )
+                             ORDER BY modelID ),
+               GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, modelID, NULL )
+                             ORDER BY modelID )
+    INTO       l_gmp_models, l_other_models
+    FROM       model
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
 
-    DELETE      FROM noise
-    WHERE       editedDataID = p_editedDataID;
+    SELECT     GROUP_CONCAT( IF( model_in_autoflow( modelID ) = 1, noiseID, NULL )
+                             ORDER BY noiseID ),
+               GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, noiseID, NULL )
+                             ORDER BY noiseID )
+    INTO       l_gmp_noise, l_other_noise
+    FROM       noise
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
 
-    DELETE      noise
-    FROM        noise
-    JOIN        model ON ( model.modelID = noise.modelID )
-    WHERE       model.editedDataID = p_editedDataID;
+    SELECT     GROUP_CONCAT( IF( model_in_autoflow( n.modelID ) = 1, n.noiseID, NULL )
+                             ORDER BY n.noiseID ),
+               GROUP_CONCAT( IF( model_of_other_investigator( n.modelID ) = 1, n.noiseID, NULL )
+                             ORDER BY n.noiseID )
+    INTO       l_gmp_noise2, l_other_noise2
+    FROM       model m
+    JOIN       noise n ON ( n.modelID = m.modelID )
+    WHERE      m.editedDataID = p_editedDataID
+    AND        n.editedDataID != p_editedDataID
+    FOR UPDATE;
 
-    DELETE      modelPerson
-    FROM        modelPerson
-    JOIN        model ON ( model.modelID = modelPerson.modelID )
-    WHERE       model.editedDataID = p_editedDataID;
+    SET l_gmp_noise   = NULLIF( CONCAT_WS( ',', l_gmp_noise,   l_gmp_noise2   ), '' );
+    SET l_other_noise = NULLIF( CONCAT_WS( ',', l_other_noise, l_other_noise2 ), '' );
 
-    DELETE      FROM model
-    WHERE       editedDataID = p_editedDataID;
+    IF ( l_gmp_models IS NOT NULL OR l_gmp_noise IS NOT NULL ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: it would take along ',
+                                    'records the GMP framework refers to (',
+                                    CONCAT_WS( '; ',
+                                      CONCAT( 'models ', l_gmp_models ),
+                                      CONCAT( 'noise of such models ', l_gmp_noise ) ),
+                                    ')' );
 
-    DELETE      FROM pcsa_modelrecs
-    WHERE       editedDataID = p_editedDataID;
+    ELSEIF ( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: it would take along ',
+                                    'records of another investigator, which only an ',
+                                    'administrator may delete (',
+                                    CONCAT_WS( '; ',
+                                      CONCAT( 'models ', l_other_models ),
+                                      CONCAT( 'noise of such models ', l_other_noise ) ),
+                                    ')' );
 
-    DELETE      FROM editedData
-    WHERE       editedDataID = p_editedDataID;
-
-    IF ( l_in_trx = 1 ) THEN
-      RELEASE SAVEPOINT delete_editedData;
     ELSE
-      COMMIT;
+      -- Children before parents, so that no foreign key is checked against
+      -- a row that is about to go
+      DELETE      reportDocument, documentLink
+      FROM        reportDocument
+      LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
+      WHERE       reportDocument.editedDataID = p_editedDataID;
+
+      DELETE      FROM noise
+      WHERE       editedDataID = p_editedDataID;
+
+      DELETE      noise
+      FROM        noise
+      JOIN        model ON ( model.modelID = noise.modelID )
+      WHERE       model.editedDataID = p_editedDataID;
+
+      DELETE      modelPerson
+      FROM        modelPerson
+      JOIN        model ON ( model.modelID = modelPerson.modelID )
+      WHERE       model.editedDataID = p_editedDataID;
+
+      DELETE      FROM model
+      WHERE       editedDataID = p_editedDataID;
+
+      DELETE      FROM pcsa_modelrecs
+      WHERE       editedDataID = p_editedDataID;
+
+      DELETE      FROM editedData
+      WHERE       editedDataID = p_editedDataID;
+
+    END IF;
+
+    -- A refusal deleted nothing, but ends the transaction or the savepoint
+    -- all the same
+    IF ( @US3_LAST_ERRNO = @OK ) THEN
+      IF ( l_in_trx = 1 ) THEN
+        RELEASE SAVEPOINT us3_delete_editedData_sp;
+      ELSE
+        COMMIT;
+      END IF;
+    ELSE
+      IF ( l_in_trx = 1 ) THEN
+        ROLLBACK TO SAVEPOINT us3_delete_editedData_sp;
+        RELEASE SAVEPOINT us3_delete_editedData_sp;
+      ELSE
+        ROLLBACK;
+      END IF;
     END IF;
 
   END IF;
