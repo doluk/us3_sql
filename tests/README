@@ -119,8 +119,9 @@ GMP models or their noise (autoflowModelsLink; the model ID as a string or
 a number, under 2DSA_IT, 2DSA_MC or PCSA) or, for anyone but an
 administrator, another investigator's model or noise -- also noise
 committed after the caller's transaction took its snapshot; deletes the
-edit, its models and all their noise, and noise recorded against the edit
-for another edit's model; is all or nothing when the edit cannot be
+edit, its models and all their noise (also noise computed from an edit
+of another experiment), and noise recorded against the edit for another
+edit's model; is all or nothing when the edit cannot be
 deleted (a stand-in table refers to it), both on its own and inside a
 caller's transaction, which it must neither commit nor lose; with
 autocommit off leaves the commit to the caller; fails cleanly in a

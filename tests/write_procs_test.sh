@@ -15,8 +15,9 @@
 #       also when they were committed after the caller's transaction took
 #       its snapshot;
 #     - deletes the edit, its models and their noise wherever it was
-#       recorded, and the noise recorded against the edit for a model of
-#       another edit (a global fit);
+#       recorded (also noise computed from another experiment's edit),
+#       and the noise recorded against the edit for a model of another
+#       edit (a global fit);
 #     - is all or nothing: when the edit cannot be deleted, nothing that
 #       depends on it is deleted either, and the status says why --
 #       standalone, inside a caller's open transaction (which it must
@@ -399,6 +400,17 @@ close_session B
 check "... and nothing was deleted" "$FULL" "$( q "$STATE" )"
 
 echo "== delete_editedData: deleting"
+
+# gamma's edit 9304, undone again: its model 9405 takes the global-fit
+# noise 9508 along, although that was computed from alpha's edit 9303
+check "bob deletes gamma's edit 9304 (rolled back again)" \
+      "0 | 1,9301,9302,9303,9305 | 9401,9402,9403,9404,9406,9407 | 9401,9402,9403,9406,9407 | 9501,9502,9503,9504,9507,9509" \
+      "$( echo $( q "START TRANSACTION;
+                     CALL delete_editedData( $BOB, 9304 );
+                     SELECT '|';
+                     $STATE;
+                     ROLLBACK;" ) )"
+check "... and the rollback restored it" "$FULL" "$( q "$STATE" )"
 
 # 9303: its model 9404 with noise 9503, and the global-fit noise 9508
 # (recorded against 9303, fitted with gamma's model 9405) -- which made the

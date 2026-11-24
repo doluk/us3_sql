@@ -1503,9 +1503,23 @@ END$$
 --   lock wait timeout with innodb_rollback_on_timeout on).  @US3_LAST_ERRNO
 --   is then @ERROR and @US3_LAST_ERROR says what happened.
 --
--- Another investigator's models fitted to this edit, and their noise, are
--- deleted with it when an administrator deletes it; a model with no
--- modelPerson row always is.
+-- Other investigators' records
+--   Ownership is checked by model (modelPerson): a noise record is the
+--   record of whoever owns the model it was fitted with, whatever edit or
+--   experiment it was computed from.  So:
+--     - an administrator's call deletes, without asking, the models other
+--       investigators fitted to this edit, every noise record fitted with
+--       them, and the noise recorded against this edit for another
+--       investigator's model of another edit (that model stays) -- the
+--       same records that make anyone else's call refuse, as above;
+--     - anyone's call, administrator or not, deletes the edit's models
+--       that have no modelPerson row and their noise, and every noise
+--       record fitted with one of the edit's models that it may delete,
+--       also when that noise was computed from an edit in another
+--       experiment, of another investigator, on which the caller has no
+--       permission at all (global-fit noise; the edit itself stays);
+--     - report documents of the edit go with it (they have no owner).
+--   No model of another edit is ever deleted.
 DROP PROCEDURE IF EXISTS delete_editedData$$
 CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
                                      p_password     VARCHAR(80),

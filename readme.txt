@@ -134,6 +134,12 @@ delete_editedData (us3_expdata_procs.sql) now:
     which its savepoint is gone);
   - uses the savepoint name us3_delete_editedData_sp.
 
+As before, an administrator's call deletes, with the edit, the models
+other investigators fitted to it and their noise, and anyone's call
+deletes all noise fitted with the edit's models that it may delete, also
+noise computed from another investigator's edit in another experiment
+(a global fit).  The procedure's header lists exactly what goes.
+
 create_buffer_component (us3_buffer_procs.sql) no longer reads the
 highest ID with a locking read, which inside a caller's transaction held
 a gap lock until it ended and deadlocked other connections creating
