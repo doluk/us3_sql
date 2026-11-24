@@ -3,7 +3,7 @@ Tests for the us3_sql scripts
 
 catalog_smoke.sh      smoke test for the procedures in us3_catalog_procs.sql
 catalog_fixture.sql   the data set it loads
-catalog_mutations.sh  checks that catalog_smoke.sh catches broken procedures
+catalog_mutations.sh  checks that the two tests catch broken procedures
 write_procs_test.sh   live test of delete_editedData and of the procedures
                       that report a new record's ID (create_buffer_component,
                       add_buffer_component)
@@ -90,29 +90,55 @@ catalog procedures it sources.
 catalog_mutations.sh
 --------------------
 
-Proves the smoke test can fail.  For each of its mutations -- two columns
-swapped, a UTC conversion dropped, an edit checksum that is NULL, a
-*_by_person procedure that hashes its blobs, an ORDER BY removed, noise
+Proves the tests can fail.  For each of its mutations it loads a broken
+copy of a procedure file and expects the test that covers it to fail:
+catalog_smoke.sh (with SMOKE_CATALOG) for us3_catalog_procs.sql -- two
+columns swapped, a UTC conversion dropped, an edit checksum that is NULL,
+a *_by_person procedure that hashes its blobs, an ORDER BY removed, noise
 counted or listed by its edit rather than its model, experiment 1 open to
-anyone -- it loads a broken copy of us3_catalog_procs.sql
-(SMOKE_CATALOG) and expects catalog_smoke.sh to fail.  It prints "caught"
-or "SURVIVED" for each, and exits 1 if any survived, 2 if a mutation no
-longer applies to the file.  Name mutations as arguments to run only
-those.  The whole set takes two minutes or so.
+anyone -- and write_procs_test.sh (with WRITE_OVERRIDE) for
+us3_expdata_procs.sql and us3_buffer_procs.sql -- delete_editedData with
+experiment 1 open to anyone, the edit-1 refusal, the GMP or ownership
+checks dropped or loosened, those checks reading a stale snapshot, the
+savepoint logic, the rollback or the deadlock report broken;
+create_buffer_component with the locking read back, no or unbounded
+retries, the same ID retried, the old row-count ID, a duplicate reported
+as success or a stale ID; add_buffer_component reporting a stale ID.  It
+prints "caught" or "SURVIVED" for each, and exits 1 if any survived, 2 if
+a mutation no longer applies to its file.  Name mutations as arguments to
+run only those.  The whole set takes ten minutes or so.
 
 
 write_procs_test.sh
 -------------------
 
-delete_editedData: deletes the edit, its models and all their noise, and
-noise recorded against the edit for another edit's model; is all or
-nothing when the edit cannot be deleted (a stand-in table refers to it),
-both on its own and inside a caller's transaction, which it must neither
-commit nor lose; refuses the UNASSIGNED edit 1 and strangers.
+delete_editedData: refuses strangers, also for experiment 1, the
+UNASSIGNED edit 1 (to administrators too) and an edit that does not
+exist; refuses, deleting nothing, an edit whose removal would take along
+GMP models or their noise (autoflowModelsLink; the model ID as a string or
+a number, under 2DSA_IT, 2DSA_MC or PCSA) or, for anyone but an
+administrator, another investigator's model or noise -- also noise
+committed after the caller's transaction took its snapshot; deletes the
+edit, its models and all their noise, and noise recorded against the edit
+for another edit's model; is all or nothing when the edit cannot be
+deleted (a stand-in table refers to it), both on its own and inside a
+caller's transaction, which it must neither commit nor lose; with
+autocommit off leaves the commit to the caller; fails cleanly in a
+read-only transaction; and, with two sessions, raises a deadlock inside a
+caller's transaction as error 1213.
 
 create_buffer_component: takes a free ID when the table has a gap, and
 reports that ID through last_insertID() rather than the connection's
-previous insert; reports 0 when refused.  add_buffer_component reports 0.
+previous insert; reports 0 when refused; tries the next ID when one is
+taken and gives up with 402 after 100 attempts (a trigger fakes the
+duplicates); takes a free ID inside a transaction whose snapshot predates
+components committed since; and, with two sessions -- one creating three
+components inside an open transaction, the other one at the same time --
+neither deadlocks and the IDs are distinct.  add_buffer_component reports
+0.
+
+The two-session checks drive two clients at once through FIFOs and read
+information_schema.INNODB_TRX, so the account needs the PROCESS privilege.
 
 
 us3.sql on MySQL 8.0

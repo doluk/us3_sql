@@ -105,3 +105,42 @@ check_user() is unchanged for now.  What was tried:
 Until then a client should keep transactions short, log in (call any
 procedure) just before opening one, and expect error 1205 in other
 programs of the same investigator while a long transaction is open.
+
+
+delete_editedData and create_buffer_component (changed behaviour)
+
+delete_editedData (us3_expdata_procs.sql) now:
+
+  - allows an edit to an administrator and to anyone with an
+    experimentPerson row for its experiment, also for experiment 1 (it
+    used verify_editData_permission(), which opens experiment 1 to
+    anybody).  It calls verify_catalog_experiment() from
+    us3_catalog_procs.sql, so load that file too when loading
+    us3_expdata_procs.sql on its own;
+  - answers @NO_EDITDATA (510) for an edit that does not exist (it
+    answered @NO_EXPERIMENT, 508);
+  - refuses with @NOTPERMITTED (201), deleting nothing, when the models
+    or noise it would take along include a model autoflowModelsLink
+    refers to (GMP) or noise fitted with one -- for administrators too --
+    or, for anyone but an administrator, another investigator's model
+    (modelPerson) or noise fitted with one.  The message says which
+    ("... records the GMP framework refers to (...)" or "... records of
+    another investigator, which only an administrator may delete (...)")
+    and lists the record IDs.  It needs JSON_CONTAINS (MySQL 5.7,
+    MariaDB 10.2.3);
+  - raises error 1213 (SQLSTATE 40001) instead of answering a status when
+    a deadlock inside a caller's transaction made the server roll that
+    whole transaction back (and likewise re-raises any other error after
+    which its savepoint is gone);
+  - uses the savepoint name us3_delete_editedData_sp.
+
+create_buffer_component (us3_buffer_procs.sql) no longer reads the
+highest ID with a locking read, which inside a caller's transaction held
+a gap lock until it ended and deadlocked other connections creating
+components.  It reads it without locking, and when the ID is taken tries
+the next one, up to 100 times, before answering @INSERTDUP (402).  A
+connection whose ID another transaction has inserted but not committed
+waits for that transaction, as for any duplicate key; giving
+bufferComponentID an AUTO_INCREMENT would remove that wait too, but is a
+schema change.  The header of each procedure has the details;
+tests/write_procs_test.sh checks them.
