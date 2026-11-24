@@ -10,7 +10,8 @@
 #     - who may delete: an administrator or someone on the edit's
 #       experiment, also for experiment 1; not the UNASSIGNED edit 1;
 #     - what it will not take along: models and noise the GMP framework
-#       refers to (autoflowModelsLink), for everybody, and another
+#       refers to (autoflowModelsLink, also a row that is not valid JSON,
+#       which must not make the call fail), for everybody, and another
 #       investigator's models and noise, for anyone but an administrator --
 #       also when they were committed after the caller's transaction took
 #       its snapshot;
@@ -24,7 +25,9 @@
 #       neither commit nor lose), with autocommit off, and in a read-only
 #       transaction;
 #     - a deadlock inside a caller's transaction is raised as error 1213,
-#       not answered with a status (two sessions).
+#       not answered with a status (two sessions);
+#     - 1000 models and noise records against 1000 GMP links: within
+#       WRITE_PERF_LIMIT seconds (default 5).
 #
 #   create_buffer_component (us3_buffer_procs.sql)
 #     - takes a free ID when the table has a gap, and reports that ID (not
@@ -315,6 +318,35 @@ q "UPDATE autoflowModelsLink
    WHERE  autoflowAnalysisID = 9701" > /dev/null
 check "after the refusals nothing changed" "$FULL" "$( q "$STATE" )"
 
+# A modelsDesc that is not valid JSON: possible where the column has no
+# CHECK, as in a table created on MariaDB before 10.4.3 (simulated by
+# making it a LONGTEXT; on MySQL too).  JSON_CONTAINS on such a row failed
+# (4038 in MariaDB, 3141 in MySQL), so one such row stopped every deletion.
+# It cannot be read by key, so the digits after each "modelID" in it are
+# protected: here 9404, of edit 9303 -- not 9303, which only a GUID holds
+q "ALTER TABLE autoflowModelsLink MODIFY modelsDesc LONGTEXT NULL;
+   INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     VALUES ( 9702, '{\"2DSA\":[{\"modelGUID\":\"00000000-0000-4000-8000-000000009303\",\"modelID\": 9404', 9801 )" > /dev/null
+check "a row that is not valid JSON is stored" "0" \
+      "$( q "SELECT JSON_VALID( modelsDesc ) FROM autoflowModelsLink WHERE autoflowAnalysisID = 9702" )"
+check "GMP, a row that is not JSON names model 9404: 9303 is refused" \
+      "201 201 $GMP (models 9404; noise of such models 9503)" \
+      "$( del "$BOB" 9303 250 )"
+
+# The digits after "modelID", not those that merely contain the ID, nor a
+# GUID's; such a row does not stop a deletion (rolled back again)
+q "UPDATE autoflowModelsLink
+   SET    modelsDesc = '{\"PCSA\":[{\"modelID\":\"94040\",\"modelGUID\":\"00000000-0000-4000-8000-000000009404\"}'
+   WHERE  autoflowAnalysisID = 9702" > /dev/null
+check "a row that is not JSON and names other models: bob may delete 9303" \
+      "0 | 1,9301,9302,9304,9305" \
+      "$( echo $( q "START TRANSACTION;
+                     CALL delete_editedData( $BOB, 9303 );
+                     SELECT '|', ( SELECT GROUP_CONCAT( editedDataID ORDER BY editedDataID ) FROM editedData );
+                     ROLLBACK;" ) )"
+check "after it nothing changed" "$FULL" "$( q "$STATE" )"
+# The row stays, so every deletion below runs with it in the table
+
 # Foreign noise committed after the caller's transaction took its snapshot:
 # carol's model 9408 (on gamma's edit), with noise 9510 recorded against
 # 9303.  Bob, on 9303's experiment, would otherwise be allowed to delete it.
@@ -471,6 +503,92 @@ check "bob deletes his edit 9305 in experiment 1" "0" \
 check "... with its model 9406 and noise 9507" \
       "1,9302,9304 | 9402,9405,9407 | 9402,9405,9407 | 9505" \
       "$( q "$STATE" )"
+
+echo "== delete_editedData: many models, many GMP links"
+
+# Edit 9310 of alpha with 1000 models of alice's and a noise record for
+# each, and 1000 autoflowModelsLink rows naming 9 other models each.  The
+# GMP check used to search the whole table with JSON_CONTAINS for every
+# model and noise record, under row locks: 18-25 s.  Now it reads the
+# table once.  WRITE_PERF_LIMIT (seconds, default 5) is the limit for one
+# call.  The row that is not JSON goes first, so that the old check gets as
+# far as being slow.
+LIMIT=${WRITE_PERF_LIMIT:-5}
+q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9702" > /dev/null
+# link <SQL expression> : an SQL expression for one {"modelID":...,"modelGUID":...}
+link()
+{
+   echo "CONCAT( '{\"modelID\":\"', $1, '\",\"modelGUID\":\"00000000-0000-4000-8000-000000', $1, '\"}' )"
+}
+SEQ="( SELECT a.d + 10 * b.d + 100 * c.d AS i
+       FROM   ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) a,
+              ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) b,
+              ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) c ) s"
+setup $MYSQL "$DB" -e "
+   SET FOREIGN_KEY_CHECKS = 0;
+   INSERT INTO editedData ( editedDataID, rawDataID, editGUID, label, data, filename, comment )
+     VALUES ( 9310, 9201, '00000000-0000-4000-8000-000000009310', 'smoke_many', 'EDIT-9310',
+              'smoke_alpha.many.xml', '' );
+   INSERT INTO model ( modelID, editedDataID, modelGUID, description, xml )
+     SELECT 20000 + i, 9310, CONCAT( '00000000-0000-4000-8000-0000000', 20000 + i ),
+            CONCAT( 'many.', i, '.model' ), '<model/>' FROM $SEQ;
+   INSERT INTO modelPerson ( modelID, personID ) SELECT 20000 + i, 902 FROM $SEQ;
+   INSERT INTO noise ( noiseID, noiseGUID, editedDataID, modelID, modelGUID,
+                       noiseType, description, xml )
+     SELECT 30000 + i, CONCAT( '00000000-0000-4000-8000-0000000', 30000 + i ), 9310, 20000 + i,
+            CONCAT( '00000000-0000-4000-8000-0000000', 20000 + i ), 'ti_noise',
+            CONCAT( 'many.', i, '.noise' ), '<noise/>' FROM $SEQ;
+   INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     SELECT 40000 + i,
+            CONCAT( '{',
+              '\"2DSA_IT\":[', $( link "100000 + 9 * i" ), ',', $( link "100001 + 9 * i" ), ',', $( link "100002 + 9 * i" ), '],',
+              '\"2DSA_MC\":[', $( link "100003 + 9 * i" ), ',', $( link "100004 + 9 * i" ), ',', $( link "100005 + 9 * i" ), '],',
+              '\"PCSA\":[',    $( link "100006 + 9 * i" ), ',', $( link "100007 + 9 * i" ), ',', $( link "100008 + 9 * i" ), ']}' ),
+            9801
+     FROM $SEQ;
+   SET FOREIGN_KEY_CHECKS = 1;"
+check "1000 models, 1000 noise records and 1000 links (valid JSON, 9 models each) loaded" \
+      "1000 1000 1000 1000 9000" \
+      "$( echo $( q "SELECT COUNT(*) FROM model WHERE editedDataID = 9310;
+                     SELECT COUNT(*) FROM noise WHERE editedDataID = 9310;
+                     SELECT COUNT(*), SUM( JSON_VALID( modelsDesc ) ),
+                            SUM( JSON_LENGTH( JSON_EXTRACT( modelsDesc, '$.*[*].modelID' ) ) )
+                     FROM autoflowModelsLink WHERE autoflowAnalysisID >= 40000" ) )"
+
+# timed <sql> : its output, then the seconds the statements took
+timed()
+{
+   q "SET @t0 = NOW( 6 ); $1; SELECT ROUND( TIMESTAMPDIFF( MICROSECOND, @t0, NOW( 6 ) ) / 1e6, 2 )"
+}
+fast() { awk -v t="$1" -v l="$LIMIT" 'BEGIN { print ( t + 0 <= l + 0 ) ? "fast" : "slow (" t " s)" }'; }
+
+out=$( timed "START TRANSACTION;
+              CALL delete_editedData( $ALICE, 9310 );
+              SELECT COUNT(*), LEFT( last_error(), 200 ) FROM model WHERE editedDataID = 9310;
+              ROLLBACK" )
+echo "   delete_editedData, nothing protected: $( echo "$out" | tail -1 ) s"
+check "nothing protected: deleted, within $LIMIT s" "0 0 fast" \
+      "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
+
+q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     VALUES ( 41000, '{\"PCSA\":[{\"modelID\":\"20500\"}]}', 9801 )" > /dev/null
+out=$( timed "CALL delete_editedData( $ALICE, 9310 );
+              SELECT LEFT( last_error(), 250 )" )
+echo "   delete_editedData, one model protected: $( echo "$out" | tail -1 ) s"
+check "one of them protected: refused, within $LIMIT s" \
+      "201 $GMP (models 20500; noise of such models 30500) fast" \
+      "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
+
+q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID >= 40000" > /dev/null
+check "... and without that link alice deletes it all" "0 | 0 0 0" \
+      "$( echo $( q "CALL delete_editedData( $ALICE, 9310 );
+                     SELECT '|';
+                     SELECT COUNT(*) FROM model WHERE modelID BETWEEN 20000 AND 20999;
+                     SELECT COUNT(*) FROM noise WHERE noiseID BETWEEN 30000 AND 30999;
+                     SELECT COUNT(*) FROM editedData WHERE editedDataID = 9310" ) )"
 
 echo "== create_buffer_component"
 

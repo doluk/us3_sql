@@ -102,7 +102,9 @@ a *_by_person procedure that hashes its blobs, an ORDER BY removed, noise
 counted or listed by its edit rather than its model, experiment 1 open to
 anyone -- and write_procs_test.sh (with WRITE_OVERRIDE) for the other
 files: delete_editedData with experiment 1 open to anyone, the edit-1
-refusal, the GMP or ownership checks dropped or loosened, those checks
+refusal, the GMP or ownership checks dropped or loosened (numbers, PCSA
+or the key ignored, a substring match, no JSON_VALID guard, rows that are
+not JSON ignored), those checks
 reading a stale snapshot, the savepoint logic, the rollback or the
 deadlock report broken; create_buffer_component with the locking read
 back, no or unbounded retries, the same ID retried, the old row-count ID,
@@ -128,8 +130,11 @@ delete_editedData: refuses strangers, also for experiment 1, the
 UNASSIGNED edit 1 (to administrators too) and an edit that does not
 exist; refuses, deleting nothing, an edit whose removal would take along
 GMP models or their noise (autoflowModelsLink; the model ID as a string or
-a number, under 2DSA_IT, 2DSA_MC or PCSA) or, for anyone but an
-administrator, another investigator's model or noise -- also noise
+a number, under 2DSA_IT, 2DSA_MC or PCSA, but not under another key nor
+an ID that merely contains it; and a row that is not valid JSON -- the
+column made a LONGTEXT, as on MariaDB before 10.4.3 -- naming it after
+"modelID", while such a row naming other models stops nothing) or, for
+anyone but an administrator, another investigator's model or noise -- also noise
 committed after the caller's transaction took its snapshot; deletes the
 edit, its models and all their noise (also noise computed from an edit
 of another experiment), and noise recorded against the edit for another
@@ -138,7 +143,11 @@ deleted (a stand-in table refers to it), both on its own and inside a
 caller's transaction, which it must neither commit nor lose; with
 autocommit off leaves the commit to the caller; fails cleanly in a
 read-only transaction; and, with two sessions, raises a deadlock inside a
-caller's transaction as error 1213.
+caller's transaction as error 1213.  With 1000 models and 1000
+noise records on an edit and 1000 autoflowModelsLink rows naming 9
+models each, a call that deletes and one that is refused each take at
+most WRITE_PERF_LIMIT seconds (default 5; the procedures in the readme's
+version 1 took 25-110 s, these 0.2 s).
 
 create_buffer_component: takes a free ID when the table has a gap, and
 reports that ID through last_insertID() rather than the connection's

@@ -687,7 +687,10 @@ DELIMITER $$
 --   2  as 1, plus clear_experiment_fields (us3_exp_procs.sql), which sets
 --      an experiment's centrifugeProtocol and/or RIProfile to NULL, and
 --      set_rotor_calibration_date (us3_hardware_procs.sql), which sets a
---      rotor calibration's dateUpdated.  No existing procedure changed.
+--      rotor calibration's dateUpdated; delete_editedData reads
+--      autoflowModelsLink once per call (autoflow_model_ids) and no
+--      longer fails on a modelsDesc that is not valid JSON.  No parameter
+--      list changed.
 --
 -- Raise the number whenever a change to the procedures is one a client
 -- may need to tell apart, and add a line here and in readme.txt.  It says

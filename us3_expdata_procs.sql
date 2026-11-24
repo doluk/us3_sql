@@ -1370,32 +1370,128 @@ BEGIN
 
 END$$
 
--- Is model p_modelID one the GMP framework refers to?  1 when an
--- autoflowModelsLink row lists its modelID under 2DSA_IT, 2DSA_MC or PCSA
--- in modelsDesc -- the keys UltraScan3 reads it from
--- (US_ModelGui::is_modelIDs_from_autoflow); the ID may be stored as a
--- string or as a number.  0 otherwise.
+-- The model IDs the GMP framework refers to, read once per call, as one
+-- list ",id,id,...," in p_ids (LOCATE( CONCAT( ',', modelID, ',' ),
+-- p_ids ) > 0 tests a model).  This is the GMP protection policy:
+--
+--   - a valid modelsDesc of autoflowModelsLink protects the modelID
+--     members of the objects in the arrays under the keys 2DSA_IT, 2DSA_MC
+--     and PCSA, and nothing else -- the keys and the shape UltraScan3 reads
+--     (US_DataTree::parse_models_desc_json in us_manage_data; the LIMS
+--     writes the same).  Models of the other stages (2DSA, 2DSA_FM, ...)
+--     are not protected, as in UltraScan3.  A modelID may be a string,
+--     which must be the model's ID exactly ("9405", not " 9405" or
+--     "09405"), or a number equal to it (9405 or 9405.0);
+--   - a modelsDesc that is not valid JSON (possible in a table created on
+--     MariaDB before 10.4.3, whose JSON columns had no CHECK yet, or in a
+--     column changed to TEXT) cannot be read by key.  UltraScan3 ignores
+--     such a row, but it still names GMP models, and a deletion cannot be
+--     undone, so here it protects, under any key, the run of digits that
+--     starts within 8 characters after each "modelID" in its text (the
+--     ID of {"modelID":"9405" and of "modelID": 9405, also in a
+--     truncated text).  Such a row no longer makes the JSON functions
+--     fail: it used to stop every edit deletion on MariaDB (error 4038).
+--   - NULL is no reference.
+--
+-- It reads every row once, without locking (a locking read would lock the
+-- whole table), so a call costs one pass over the table plus one string
+-- search per model checked, instead of a JSON search of the whole table
+-- per model.  It needs only JSON_VALID, JSON_EXTRACT, JSON_LENGTH and
+-- JSON_UNQUOTE (MySQL 5.7.8, MariaDB 10.2.3; us3.sql's JSON column needs
+-- MariaDB 10.2.7), not JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).
 DROP FUNCTION IF EXISTS model_in_autoflow$$
-CREATE FUNCTION model_in_autoflow( p_modelID INT )
-  RETURNS TINYINT
+DROP PROCEDURE IF EXISTS autoflow_model_ids$$
+CREATE PROCEDURE autoflow_model_ids ( OUT p_ids LONGBLOB )
   READS SQL DATA
 
 BEGIN
-  DECLARE l_as_text   JSON;
-  DECLARE l_as_number JSON;
+  DECLARE l_done   TINYINT DEFAULT 0;
+  DECLARE l_desc   LONGTEXT CHARACTER SET utf8mb4;
+  DECLARE l_ids    LONGTEXT CHARACTER SET utf8mb4;
+  DECLARE l_value  LONGTEXT CHARACTER SET utf8mb4;
+  DECLARE l_raw    LONGBLOB;
+  DECLARE l_count  INT;
+  DECLARE l_i      INT;
+  DECLARE l_pos    INT;
+  DECLARE l_start  INT;
+  DECLARE l_end    INT;
+  DECLARE l_length INT;
+  DECLARE l_number DOUBLE;
 
-  SET l_as_text   = JSON_OBJECT( 'modelID', CAST( p_modelID AS CHAR ) );
-  SET l_as_number = JSON_OBJECT( 'modelID', p_modelID );
+  DECLARE c_links CURSOR FOR
+    SELECT modelsDesc
+    FROM   autoflowModelsLink
+    WHERE  modelsDesc IS NOT NULL;
 
-  RETURN EXISTS
-    ( SELECT 1
-      FROM   autoflowModelsLink
-      WHERE  JSON_CONTAINS( modelsDesc, l_as_text,   '$."2DSA_IT"' )
-      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$."2DSA_IT"' )
-      OR     JSON_CONTAINS( modelsDesc, l_as_text,   '$."2DSA_MC"' )
-      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$."2DSA_MC"' )
-      OR     JSON_CONTAINS( modelsDesc, l_as_text,   '$.PCSA' )
-      OR     JSON_CONTAINS( modelsDesc, l_as_number, '$.PCSA' ) );
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
+
+  SET p_ids = ',';
+
+  OPEN c_links;
+
+  links: LOOP
+    FETCH c_links INTO l_desc;
+    IF ( l_done = 1 ) THEN
+      LEAVE links;
+    END IF;
+
+    IF ( JSON_VALID( l_desc ) ) THEN
+      -- An array of the stages' modelID values, NULL when there are none
+      SET l_ids   = JSON_EXTRACT( l_desc, '$."2DSA_IT"[*].modelID',
+                                          '$."2DSA_MC"[*].modelID',
+                                          '$.PCSA[*].modelID' );
+      SET l_count = COALESCE( JSON_LENGTH( l_ids ), 0 );
+      SET l_i     = 0;
+
+      WHILE ( l_i < l_count ) DO
+        SET l_value = JSON_EXTRACT( l_ids, CONCAT( '$[', l_i, ']' ) );
+
+        IF ( LEFT( l_value, 1 ) = '"' ) THEN
+          -- A string: as it is (a comma in it cannot make a list item)
+          SET p_ids = CONCAT( p_ids, REPLACE( JSON_UNQUOTE( l_value ), ',', ' ' ), ',' );
+
+        ELSEIF ( LEFT( l_value, 1 ) IN ( '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' ) ) THEN
+          -- A number: when it is a whole number a model ID can be
+          SET l_number = l_value + 0;
+          IF ( l_number = FLOOR( l_number ) AND ABS( l_number ) < 2147483648 ) THEN
+            SET p_ids = CONCAT( p_ids, CAST( l_number AS SIGNED ), ',' );
+          END IF;
+
+        END IF;
+
+        SET l_i = l_i + 1;
+      END WHILE;
+
+    ELSE
+      -- Not JSON: the digits after each "modelID", bytewise
+      SET l_raw    = CAST( l_desc AS BINARY );
+      SET l_length = LENGTH( l_raw );
+      SET l_pos    = LOCATE( 'modelID', l_raw );
+
+      WHILE ( l_pos > 0 ) DO
+        SET l_start = l_pos + 7;
+        WHILE ( l_start < l_pos + 15 AND l_start <= l_length AND
+                SUBSTRING( l_raw, l_start, 1 ) NOT BETWEEN '0' AND '9' ) DO
+          SET l_start = l_start + 1;
+        END WHILE;
+
+        SET l_end = l_start;
+        WHILE ( l_end <= l_length AND SUBSTRING( l_raw, l_end, 1 ) BETWEEN '0' AND '9' ) DO
+          SET l_end = l_end + 1;
+        END WHILE;
+
+        IF ( l_end > l_start ) THEN
+          SET p_ids = CONCAT( p_ids, SUBSTRING( l_raw, l_start, l_end - l_start ), ',' );
+        END IF;
+
+        SET l_pos = LOCATE( 'modelID', l_raw, l_pos + 7 );
+      END WHILE;
+
+    END IF;
+
+  END LOOP;
+
+  CLOSE c_links;
 
 END$$
 
@@ -1459,9 +1555,10 @@ END$$
 --   so a client cannot show, or check, what else an edit removal would
 --   take.  The call is therefore refused, and the message names the
 --   records, when the models or noise it would delete include
---     - a model the GMP framework refers to (model_in_autoflow():
---       autoflowModelsLink lists it), or noise fitted with one -- for
---       everybody, administrators included;
+--     - a model the GMP framework refers to (autoflow_model_ids():
+--       autoflowModelsLink lists it under 2DSA_IT, 2DSA_MC or PCSA, or a
+--       row that is not valid JSON names it), or noise fitted with one --
+--       for everybody, administrators included;
 --     - for anyone but an administrator, a model of another investigator
 --       (model_of_other_investigator(): somebody else's modelPerson row,
 --       none of the caller's), or noise fitted with one.
@@ -1541,6 +1638,7 @@ BEGIN
   DECLARE l_other_noise    TEXT    DEFAULT NULL;
   DECLARE l_gmp_noise2     TEXT    DEFAULT NULL;
   DECLARE l_other_noise2   TEXT    DEFAULT NULL;
+  DECLARE l_gmp_ids        LONGBLOB DEFAULT NULL;
 
   DECLARE EXIT HANDLER FOR SQLEXCEPTION
   BEGIN
@@ -1638,6 +1736,10 @@ BEGIN
 
   ELSE
 
+    -- The models GMP protects, read once (autoflow_model_ids), before any
+    -- row lock is taken
+    CALL autoflow_model_ids( l_gmp_ids );
+
     -- Is the caller in a transaction?  A savepoint outlives the statement
     -- that set it only inside one; outside, autocommit ends it at once and
     -- releasing it fails.  (@@in_transaction would say so directly, but
@@ -1660,7 +1762,7 @@ BEGIN
     -- locking reads, which see what is committed now even under the
     -- snapshot of a caller's REPEATABLE READ transaction.  They lock only
     -- rows the deletes below lock anyway.
-    SELECT     GROUP_CONCAT( IF( model_in_autoflow( modelID ) = 1, modelID, NULL )
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, modelID, NULL )
                              ORDER BY modelID ),
                GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, modelID, NULL )
                              ORDER BY modelID )
@@ -1669,7 +1771,7 @@ BEGIN
     WHERE      editedDataID = p_editedDataID
     FOR UPDATE;
 
-    SELECT     GROUP_CONCAT( IF( model_in_autoflow( modelID ) = 1, noiseID, NULL )
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, noiseID, NULL )
                              ORDER BY noiseID ),
                GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, noiseID, NULL )
                              ORDER BY noiseID )
@@ -1678,7 +1780,7 @@ BEGIN
     WHERE      editedDataID = p_editedDataID
     FOR UPDATE;
 
-    SELECT     GROUP_CONCAT( IF( model_in_autoflow( n.modelID ) = 1, n.noiseID, NULL )
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', n.modelID, ',' ), l_gmp_ids ) > 0, n.noiseID, NULL )
                              ORDER BY n.noiseID ),
                GROUP_CONCAT( IF( model_of_other_investigator( n.modelID ) = 1, n.noiseID, NULL )
                              ORDER BY n.noiseID )

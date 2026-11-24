@@ -62,9 +62,12 @@ del-magic-experiment-1	us3_expdata_procs.sql	s/verify_catalog_experiment\( l_exp
 del-no-edit1-refusal	us3_expdata_procs.sql	s/ELSEIF \( p_editedDataID = 1 \) THEN/ELSEIF ( p_editedDataID = -999 ) THEN/
 del-no-verify-first	us3_expdata_procs.sql	s/SET l_status = verify_user\( p_personGUID, p_password \);/SET l_status = 0;/
 del-no-gmp-check	us3_expdata_procs.sql	s/IF \( l_gmp_models IS NOT NULL OR l_gmp_noise IS NOT NULL \) THEN/IF ( 0 ) THEN/
-del-gmp-id-as-text-only	us3_expdata_procs.sql	s/OR     JSON_CONTAINS\( modelsDesc, l_as_number, '[^']*' \)/OR 0/g
-del-gmp-no-pcsa	us3_expdata_procs.sql	s/'\$\.PCSA'/'\$.PCSA_'/g
-del-gmp-any-key	us3_expdata_procs.sql	s/JSON_CONTAINS\( modelsDesc, (l_as_\w+),\s+'[^']*' \)/JSON_CONTAINS( JSON_EXTRACT( modelsDesc, '\$.*[*]' ), $1 )/g
+del-gmp-id-as-text-only	us3_expdata_procs.sql	s/ELSEIF \( LEFT\( l_value, 1 \) IN/ELSEIF ( 0 AND LEFT( l_value, 1 ) IN/
+del-gmp-no-pcsa	us3_expdata_procs.sql	s/'\$\.PCSA\[\*\]\.modelID'/'\$.PCSA_[*].modelID'/
+del-gmp-any-key	us3_expdata_procs.sql	s/JSON_EXTRACT\( l_desc, '\$\."2DSA_IT"\[\*\]\.modelID',\s+'\$\."2DSA_MC"\[\*\]\.modelID',\s+'\$\.PCSA\[\*\]\.modelID' \)/JSON_EXTRACT( l_desc, '\$.*[*].modelID' )/
+del-gmp-no-json-valid	us3_expdata_procs.sql	s/IF \( JSON_VALID\( l_desc \) \) THEN/IF ( 1 ) THEN/
+del-gmp-invalid-ignored	us3_expdata_procs.sql	s/SET l_pos    = LOCATE\( 'modelID', l_raw \);/SET l_pos    = 0;/
+del-gmp-substring	us3_expdata_procs.sql	s/LOCATE\( CONCAT\( ',', (n\.)?modelID, ',' \), l_gmp_ids \)/LOCATE( $1modelID, l_gmp_ids )/g
 del-no-foreign-check	us3_expdata_procs.sql	s/ELSEIF \( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL \) THEN/ELSEIF ( 0 ) THEN/
 del-no-foreign-models	us3_expdata_procs.sql	s/GROUP_CONCAT\( IF\( model_of_other_investigator\( modelID \) = 1, modelID, NULL \)/GROUP_CONCAT( IF( 0, modelID, NULL )/
 del-foreign-for-admin-too	us3_expdata_procs.sql	s/IF \( \@USERLEVEL >= \@US3_ADMIN \) THEN\n    RETURN 0;/IF ( 0 ) THEN\n    RETURN 0;/

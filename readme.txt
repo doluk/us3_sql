@@ -126,8 +126,23 @@ delete_editedData (us3_expdata_procs.sql) now:
     (modelPerson) or noise fitted with one.  The message says which
     ("... records the GMP framework refers to (...)" or "... records of
     another investigator, which only an administrator may delete (...)")
-    and lists the record IDs.  It needs JSON_CONTAINS (MySQL 5.7,
-    MariaDB 10.2.3);
+    and lists the record IDs;
+  - protects, as GMP models, only those that a valid modelsDesc of
+    autoflowModelsLink lists under the stages 2DSA_IT, 2DSA_MC and PCSA
+    (as a string equal to the model's ID, or an equal number), the same
+    rule as UltraScan3's us_manage_data; models of other stages (2DSA,
+    2DSA_FM, ...) are not protected.  That is policy, not an oversight:
+    change it here and in UltraScan3 together.  A modelsDesc that is not
+    valid JSON (a table created on MariaDB before 10.4.3 has no CHECK on
+    the column) is not skipped, as UltraScan3 skips it, but protects the
+    ID written after each "modelID" in its text, under any key: a
+    deletion cannot be undone, and such a row still names GMP models.
+    It no longer makes the call fail (it made JSON_CONTAINS raise error
+    4038 on MariaDB, which stopped every edit deletion);
+  - reads autoflowModelsLink once per call (autoflow_model_ids), so a
+    call costs one pass over that table, not one per model and noise
+    record: 0.2 s rather than 25-110 s for an edit with 1000 models and
+    1000 noise records against 1000 links;
   - raises error 1213 (SQLSTATE 40001) instead of answering a status when
     a deadlock inside a caller's transaction made the server roll that
     whole transaction back (and likewise re-raises any other error after
@@ -160,7 +175,9 @@ answers the version of the procedures loaded:
   0  (no such function) procedures from before these changes;
   1  the catalog procedures, and create_buffer_component,
      delete_editedData and the autoflow inserts as described above;
-  2  as 1, plus two new procedures (below); no other procedure changed.
+  2  as 1, plus two new procedures (below); delete_editedData reads
+     autoflowModelsLink once per call and copes with a row that is not
+     valid JSON (above).  No parameter list changed.
 
 A client asks with "SELECT us3_catalog_version()" and takes error 1305
 (the function does not exist) or 1370 (no EXECUTE privilege on it) as 0.
