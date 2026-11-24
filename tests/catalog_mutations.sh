@@ -10,7 +10,9 @@
 # create_buffer_component and add_buffer_component a permission, GMP or
 # ownership check dropped, the savepoint logic or the deadlock report
 # broken, the locking read of the highest component ID back, the retries
-# gone, a stale ID reported.  For each one this writes a broken copy of the
+# gone, a stale ID reported; in the autoflow procedures that insert a row
+# with the caller's key, a stale ID reported, or one for a record that was
+# not copied.  For each one this writes a broken copy of the
 # file, runs the test that covers it with that copy loaded over the real
 # one -- catalog_smoke.sh (SMOKE_CATALOG) for us3_catalog_procs.sql,
 # write_procs_test.sh (WRITE_OVERRIDE) for the others -- and expects the
@@ -79,6 +81,13 @@ bc-retry-same-id	us3_buffer_procs.sql	s/GREATEST\( l_componentID \+ 1,/GREATEST(
 bc-no-dup-status	us3_buffer_procs.sql	s/SET \@US3_LAST_ERRNO = \@INSERTDUP;(\n      SET \@US3_LAST_ERROR = 'MySQL: could not find)/SET \@US3_LAST_ERRNO = \@OK;$1/
 bc-stale-id	us3_buffer_procs.sql	s/SET \@LAST_INSERT_ID = l_componentID;/SET \@LAST_INSERT_ID = LAST_INSERT_ID();/
 bclink-stale-id	us3_buffer_procs.sql	s/(previous insert\n      )SET \@LAST_INSERT_ID = 0;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/
+af-history-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowHistory SELECT .*?)SET \@LAST_INSERT_ID = p_ID;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
+af-history-no-rowcount	us3_autoflow_procs.sql	s/(INSERT INTO autoflowHistory SELECT .*?)IF \( ROW_COUNT\(\) > 0 \) THEN/$1IF ( 1 ) THEN/s
+af-stages-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowStages SET.*?)SET \@LAST_INSERT_ID = p_id;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
+af-abde-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowAnalysisABDEStages SET.*?)SET \@LAST_INSERT_ID = p_id;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
+af-velmwl-stale-id	us3_autoflow_procs.sql	s/SET \@LAST_INSERT_ID = p_autoflowID;/SET \@LAST_INSERT_ID = LAST_INSERT_ID();/
+af-esign-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)SET \@LAST_INSERT_ID = p_ID;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
+af-esign-no-rowcount	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)IF \( ROW_COUNT\(\) > 0 \) THEN/$1IF ( 1 ) THEN/s
 EOF
 )
 

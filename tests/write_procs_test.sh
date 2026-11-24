@@ -37,6 +37,13 @@
 #       the other at the same time: no deadlock, distinct IDs;
 #     - reports 0 when it inserts nothing; add_buffer_component reports 0.
 #
+#   the autoflow procedures that insert a row keyed by the caller's
+#   autoflowID or the ID of the record they copy (us3_autoflow_procs.sql)
+#     - report that key through last_insertID(), not the connection's
+#       previous insert; 0 when refused, and 0 when there was no record to
+#       copy.  On MySQL 8.0, where us3.sql cannot create the autoflow
+#       *Stages tables, the test creates them, without the TEXT defaults.
+#
 # Usage and environment as for catalog_smoke.sh (MYSQL, KEEP_DB); the
 # scratch database is WRITE_DB (default: us3_write_procs_test), DROPPED
 # first and at the end.  WRITE_OVERRIDE names files to load after
@@ -187,6 +194,19 @@ for f in $OVERRIDE; do
    setup $MYSQL "$DB" -e "SOURCE $f"
 done
 setup $MYSQL "$DB" -e "SOURCE $here/catalog_fixture.sql"
+
+# MySQL 8.0 refuses us3.sql's autoflow*Stages tables (literal defaults on
+# TEXT columns; see tests/README).  Create them as us3.sql has them, those
+# defaults left out, where they are missing.
+perl -0777 -ne '
+   while ( /CREATE TABLE (autoflowStages|autoflowAnalysisABDEStages|autoflowAnalysisVelMwlStages) (\(.*?;)/sg ) {
+      my ( $t, $body ) = ( $1, $2 );
+      $body =~ s/\s+DEFAULT "[^"]*"//g;
+      print "CREATE TABLE IF NOT EXISTS $t $body\n";
+   }' us3.sql > "$tmp/stages.sql"
+[ "$( grep -c '^CREATE TABLE' "$tmp/stages.sql" )" = 3 ] ||
+   { echo "ERROR: setup failed: autoflow stages tables not found in us3.sql"; exit 2; }
+setup $MYSQL "$DB" -e "SOURCE $tmp/stages.sql"
 
 ADMIN="'00000000-0000-4000-8000-000000000901', 'adminpw'"
 ALICE="'00000000-0000-4000-8000-000000000902', 'alicepw'"
@@ -554,6 +574,53 @@ out=$( q "INSERT INTO buffer ( bufferID, bufferGUID, description )
           CALL add_buffer_component( $ALICE, 9601, 105, 10 );
           SELECT last_insertID(), LAST_INSERT_ID() > 0;" )
 check "add_buffer_component reports no ID (not the earlier insert's)" "0 0 1" "$( echo $out )"
+
+echo "== autoflow inserts"
+
+# These insert a row whose key is not AUTO_INCREMENT -- the caller's
+# autoflowID, or the ID of the record copied -- so LAST_INSERT_ID() would
+# be the connection's previous insert into some other table.  Each call
+# below follows such an insert (a project) in the same connection.
+q "INSERT INTO autoflow ( ID, protName, status, corrRadii, expAborted, gmpRun,
+                          devRecord, expType )
+     VALUES ( 9701, 'smoke', 'LIVE_UPDATE', 'YES', 'NO', 'NO', 'NO', 'VELOCITY' );
+   INSERT INTO autoflowGMPReportEsign ( ID, autoflowID, eSignStatusAll )
+     VALUES ( 9711, 9701, 'NO' )" > /dev/null
+
+# af <n> <procedure> <ID> : an unrelated insert, the call as alice, its
+# ID; then the same call with a wrong password, and its ID
+af()
+{
+   echo $( q "INSERT INTO project ( projectGUID, description )
+                VALUES ( '00000000-0000-4000-8000-00000000b$1', 'an earlier insert' );
+              CALL $2( $ALICE, $3 );
+              SELECT last_insertID();
+              CALL $2( '00000000-0000-4000-8000-000000000902', 'wrong', $3 );
+              SELECT last_insertID();" )
+}
+
+check "new_autoflow_history_record: the copied record's ID; refused: none" \
+      "0 9701 104 0" "$( af 001 new_autoflow_history_record 9701 )"
+check "... and the copy is there" "smoke" \
+      "$( q "SELECT protName FROM autoflowHistory WHERE ID = 9701" )"
+check "... a record that does not exist: nothing copied, no ID" \
+      "0 0 104 0" "$( af 002 new_autoflow_history_record 9799 )"
+check "add_autoflow_stages_record: the autoflowID; refused: none" \
+      "0 9701 104 0" "$( af 003 add_autoflow_stages_record 9701 )"
+check "new_autoflowAnalyisABDEstages_record: the autoflowID; refused: none" \
+      "0 9701 104 0" "$( af 004 new_autoflowAnalyisABDEstages_record 9701 )"
+check "new_autoflowAnalyisVelMwlStages_record: the autoflowID; refused: none" \
+      "0 9701 104 0" "$( af 005 new_autoflowAnalyisVelMwlStages_record 9701 )"
+check "... the three stages rows are there" "1 1 1" \
+      "$( echo $( q "SELECT COUNT(*) FROM autoflowStages WHERE autoflowID = 9701;
+                     SELECT COUNT(*) FROM autoflowAnalysisABDEStages WHERE autoflowID = 9701;
+                     SELECT COUNT(*) FROM autoflowAnalysisVelMwlStages WHERE autoflowID = 9701" ) )"
+check "new_gmp_review_history_record: the copied record's ID; refused: none" \
+      "0 9711 104 0" "$( af 006 new_gmp_review_history_record 9711 )"
+check "... and the copy is there" "9701" \
+      "$( q "SELECT autoflowID FROM autoflowGMPReportEsignHistory WHERE ID = 9711" )"
+check "... a record that does not exist: nothing copied, no ID" \
+      "0 0 104 0" "$( af 007 new_gmp_review_history_record 9799 )"
 
 echo "== $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

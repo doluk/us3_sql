@@ -6,7 +6,8 @@ catalog_fixture.sql   the data set it loads
 catalog_mutations.sh  checks that the two tests catch broken procedures
 write_procs_test.sh   live test of delete_editedData and of the procedures
                       that report a new record's ID (create_buffer_component,
-                      add_buffer_component)
+                      add_buffer_component, and the autoflow ones that
+                      insert a row with a key of their caller's)
 
 All of them run against a real server: they create a scratch database, load
 us3.sql, us3_procedures.sql and catalog_fixture.sql into it, and drop it
@@ -96,17 +97,19 @@ catalog_smoke.sh (with SMOKE_CATALOG) for us3_catalog_procs.sql -- two
 columns swapped, a UTC conversion dropped, an edit checksum that is NULL,
 a *_by_person procedure that hashes its blobs, an ORDER BY removed, noise
 counted or listed by its edit rather than its model, experiment 1 open to
-anyone -- and write_procs_test.sh (with WRITE_OVERRIDE) for
-us3_expdata_procs.sql and us3_buffer_procs.sql -- delete_editedData with
-experiment 1 open to anyone, the edit-1 refusal, the GMP or ownership
-checks dropped or loosened, those checks reading a stale snapshot, the
-savepoint logic, the rollback or the deadlock report broken;
-create_buffer_component with the locking read back, no or unbounded
-retries, the same ID retried, the old row-count ID, a duplicate reported
-as success or a stale ID; add_buffer_component reporting a stale ID.  It
-prints "caught" or "SURVIVED" for each, and exits 1 if any survived, 2 if
-a mutation no longer applies to its file.  Name mutations as arguments to
-run only those.  The whole set takes ten minutes or so.
+anyone -- and write_procs_test.sh (with WRITE_OVERRIDE) for the other
+files: delete_editedData with experiment 1 open to anyone, the edit-1
+refusal, the GMP or ownership checks dropped or loosened, those checks
+reading a stale snapshot, the savepoint logic, the rollback or the
+deadlock report broken; create_buffer_component with the locking read
+back, no or unbounded retries, the same ID retried, the old row-count ID,
+a duplicate reported as success or a stale ID; add_buffer_component
+reporting a stale ID; each of the five autoflow procedures the test calls
+reporting LAST_INSERT_ID() again, and the two copying ones reporting an ID
+when nothing was copied.  It prints "caught" or "SURVIVED" for each, and
+exits 1 if any survived, 2 if a mutation no longer applies to its file.
+Name mutations as arguments to run only those.  The whole set takes ten
+minutes or so.
 
 
 write_procs_test.sh
@@ -138,6 +141,17 @@ components inside an open transaction, the other one at the same time --
 neither deadlocks and the IDs are distinct.  add_buffer_component reports
 0.
 
+new_autoflow_history_record, add_autoflow_stages_record,
+new_autoflowAnalyisABDEstages_record,
+new_autoflowAnalyisVelMwlStages_record and new_gmp_review_history_record
+(us3_autoflow_procs.sql): each, called right after an insert into another
+table, reports the key of the row it inserted (the autoflowID, or the ID
+of the record copied) through last_insertID(), not that insert's ID; 0
+when refused, and 0 when the record to copy does not exist.  MySQL 8.0
+cannot create the three autoflow*Stages tables from us3.sql (below), so
+the test creates them where they are missing, as us3.sql has them but
+without the literal TEXT defaults.
+
 The two-session checks drive two clients at once through FIFOs and read
 information_schema.INNODB_TRX, so the account needs the PROCESS privilege.
 
@@ -165,7 +179,8 @@ fails today:
     for personal_access_tokens are MariaDB syntax (1064); the table itself
     is created without those two indexes.
 
-None of these tables is used by the procedures tested here, and
+None of these tables is used by the procedures tested here but the
+three autoflow*Stages ones, which write_procs_test.sh creates itself, and
 us3_procedures.sql loads with no errors.  One more MySQL 8.0 difference
 shows only when procedures run: get_instrument_info_new,
 add_instrument_new, update_instrument_new and decode_instrument_passw
