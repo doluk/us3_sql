@@ -1811,35 +1811,53 @@ END$$
 -- to p_dateUpdated.  add_rotor_calibration always stores the time of the
 -- call, so a client that copies a calibration from elsewhere --
 -- UltraScan3's data import does -- calls add_rotor_calibration and then
--- this to keep the original date.  The column is a TIMESTAMP: the value
--- is taken, and read back, in the connection's time zone, and a time
--- outside the TIMESTAMP range (1970-01-01 00:00:01 to 2038-01-19
--- 03:14:07 UTC) is refused with @ERROR, changing nothing, whatever the
--- sql_mode.  A NULL p_dateUpdated stores NULL (the column allows it).
+-- this to keep the original date.
+--
+-- p_dateUpdated is a string, 'YYYY-MM-DD hh:mm:ss' or 'YYYY-MM-DD'
+-- (midnight), or NULL.  It is a string, not a DATETIME, so that the
+-- procedure itself checks it: a DATETIME parameter refused an invalid
+-- date while converting the argument, with error 1292 rather than a
+-- status.  A client that passes a quoted string sees no difference.  The
+-- column is a TIMESTAMP: the value is taken, and read back, in the
+-- connection's time zone (a client that has the time in UTC can SET
+-- time_zone = '+00:00' first).  Nothing is changed, and the status is
+-- @ERROR, whatever the sql_mode, for
+--   - a string of another form (a time-zone offset, fractions of a
+--     second, a 'T') or a date that does not exist ('2019-02-30');
+--   - a time outside the TIMESTAMP range (1970-01-01 00:00:01 to
+--     2038-01-19 03:14:07 UTC): in a time zone east of UTC,
+--     '1970-01-01 00:00:00' is before it;
+--   - NULL when the column cannot hold NULL (us3.sql declares it
+--     TIMESTAMP NULL; in a table declared TIMESTAMP without NULL the
+--     server would store the time of the call, or refuse).
+-- A NULL p_dateUpdated stores NULL.
 --
 -- Who may: an administrator (userlevel 3 or more), as for
 -- add_rotor_calibration.  Status (also in @US3_LAST_ERRNO): @OK; the
 -- login's codes (@EMPTY, @NO_ACCT, @INACTIVE, @BADPASS); @NOTPERMITTED (201)
 -- below userlevel 3; @NO_CALIB (519) when no calibration has that ID;
--- @ERROR (-1) when the date is out of range or the server refuses it,
--- the reason in @US3_LAST_ERROR.
+-- @ERROR (-1) as above, or when the server refuses the value, the reason
+-- in @US3_LAST_ERROR.
 --
 -- Added with us3_catalog_version() 2.
 DROP PROCEDURE IF EXISTS set_rotor_calibration_date$$
 CREATE PROCEDURE set_rotor_calibration_date ( p_personGUID          CHAR(36),
                                               p_password            VARCHAR(80),
                                               p_rotorCalibrationID  INT,
-                                              p_dateUpdated         DATETIME )
+                                              p_dateUpdated         TEXT )
   MODIFIES SQL DATA
 
 BEGIN
-  DECLARE l_count   INT     DEFAULT 0;
-  DECLARE l_errno   INT     DEFAULT 0;
-  DECLARE l_message TEXT    DEFAULT '';
+  DECLARE l_count   INT      DEFAULT 0;
+  DECLARE l_errno   INT      DEFAULT 0;
+  DECLARE l_message TEXT     DEFAULT '';
+  DECLARE l_date    DATETIME DEFAULT NULL;
+  DECLARE l_bad     TINYINT  DEFAULT 0;
+  DECLARE l_null_ok TINYINT  DEFAULT 1;
 
   -- A value the TIMESTAMP column cannot hold (1292 in strict mode, 1264
-  -- out of range); nothing has changed
-  DECLARE EXIT HANDLER FOR 1292, 1264
+  -- out of range, 1048 NULL in a NOT NULL column); nothing has changed
+  DECLARE EXIT HANDLER FOR 1292, 1264, 1048
   BEGIN
     GET DIAGNOSTICS CONDITION 1
       l_errno = MYSQL_ERRNO, l_message = MESSAGE_TEXT;
@@ -1859,24 +1877,59 @@ BEGIN
     FROM   rotorCalibration
     WHERE  rotorCalibrationID = p_rotorCalibrationID;
 
+    IF ( p_dateUpdated IS NOT NULL ) THEN
+      -- The form first: CAST alone reads other forms differently on MySQL
+      -- and MariaDB (MySQL applies an offset, MariaDB refuses it)
+      IF ( p_dateUpdated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{2}:[0-9]{2}:[0-9]{2})?$' ) THEN
+        BEGIN
+          -- A date that does not exist: NULL, with warning 1292
+          DECLARE CONTINUE HANDLER FOR SQLEXCEPTION, SQLWARNING SET l_bad = 1;
+          SET l_date = CAST( p_dateUpdated AS DATETIME );
+        END;
+      END IF;
+      IF ( l_date IS NULL ) THEN
+        SET l_bad = 1;
+      END IF;
+
+    ELSE
+      SELECT COUNT(*) = 0
+      INTO   l_null_ok
+      FROM   information_schema.COLUMNS
+      WHERE  TABLE_SCHEMA = DATABASE()
+      AND    TABLE_NAME   = 'rotorCalibration'
+      AND    COLUMN_NAME  = 'dateUpdated'
+      AND    IS_NULLABLE  = 'NO';
+
+    END IF;
+
     IF ( l_count = 0 ) THEN
       SET @US3_LAST_ERRNO = @NO_CALIB;
       SET @US3_LAST_ERROR = CONCAT( 'MySQL: no rotor calibration with ID ',
                                     COALESCE( p_rotorCalibrationID, 'NULL' ),
                                     ' exists' );
 
-    ELSEIF ( p_dateUpdated IS NOT NULL AND
-             COALESCE( UNIX_TIMESTAMP( p_dateUpdated ), 0 ) NOT BETWEEN 1 AND 2147483647 ) THEN
+    ELSEIF ( l_bad = 1 ) THEN
+      SET @US3_LAST_ERRNO = @ERROR;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the calibration date was not set: ''',
+                                    LEFT( p_dateUpdated, 40 ), ''' is not a date ',
+                                    'of the form YYYY-MM-DD hh:mm:ss' );
+
+    ELSEIF ( l_null_ok = 0 ) THEN
+      SET @US3_LAST_ERRNO = @ERROR;
+      SET @US3_LAST_ERROR = 'MySQL: the calibration date was not set: the column cannot hold NULL in this database';
+
+    ELSEIF ( l_date IS NOT NULL AND
+             COALESCE( UNIX_TIMESTAMP( l_date ), 0 ) NOT BETWEEN 1 AND 2147483647 ) THEN
       -- Checked here, not left to the server: without strict mode it
       -- would store 0000-00-00 00:00:00 with only a warning
       SET @US3_LAST_ERRNO = @ERROR;
       SET @US3_LAST_ERROR = CONCAT( 'MySQL: the calibration date was not set: ',
-                                    p_dateUpdated, ' is outside the range ',
+                                    l_date, ' is outside the range ',
                                     'a TIMESTAMP can hold' );
 
     ELSE
       UPDATE rotorCalibration SET
-        dateUpdated        = p_dateUpdated
+        dateUpdated        = l_date
       WHERE rotorCalibrationID = p_rotorCalibrationID;
 
     END IF;

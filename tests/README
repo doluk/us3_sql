@@ -118,7 +118,8 @@ when nothing was copied; clear_experiment_fields open to anyone on
 experiment 1 or to anyone at all, not logging in first, clearing the
 wrong field or both, or storing '' rather than NULL;
 set_rotor_calibration_date open to investigators, without its not-found
-or range check, storing NOW() or ignoring NULL; the version marker in
+or range check, its form check, its invalid-date status or its NOT NULL
+guard, storing NOW() or ignoring NULL; the version marker in
 us3_procedures.sql answering 1, or dropped only just before it is
 created.  It prints
 "caught" or "SURVIVED" for each, and exits 1 if any survived, 2 if a
@@ -188,8 +189,14 @@ both to NULL (not ''), each only when asked.
 
 set_rotor_calibration_date: refuses an investigator, a bad password and
 a calibration that does not exist (519), and dates before 1970 or after
-2038 (-1, with a message of its own, whatever the sql_mode), changing
-nothing; an administrator's date is stored as given, and so is NULL.
+2038 (-1, with a message of its own, whatever the sql_mode) -- also
+1970-01-01 00:00:00 an hour east of UTC -- and, with -1 rather than
+error 1292, a date that does not exist, a string that is no date, an
+empty one, one with a time-zone offset or with fractions of a second,
+changing nothing; an administrator's date is stored as given, in the
+connection's time zone (given at +02:00, read at UTC), a date alone as
+midnight, and NULL as NULL -- but where the column is NOT NULL (the test
+makes it so for a moment) NULL is refused with -1.
 
 us3_catalog_version() answers 2, and a load of us3_procedures.sql that
 fails half-way leaves no such function behind, not even one an earlier

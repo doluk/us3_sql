@@ -58,8 +58,11 @@
 #
 #   set_rotor_calibration_date (us3_hardware_procs.sql)
 #     - administrators only; a missing calibration answers @NO_CALIB;
-#     - stores the date given, or NULL; refuses, changing nothing, a date
-#       a TIMESTAMP cannot hold.
+#     - stores the date given (in the connection's time zone), or NULL;
+#       refuses with -1, changing nothing, a date a TIMESTAMP cannot hold
+#       (also 1970-01-01 midnight east of UTC), a string that is not a
+#       date of the form YYYY-MM-DD[ hh:mm:ss], and NULL where the column
+#       is NOT NULL.
 #
 #   us3_catalog_version() (us3_procedures.sql)
 #     - answers 2, and is gone after a load of us3_procedures.sql that
@@ -1025,9 +1028,57 @@ check "a date after 2038: refused" "-1 -1 ${RANGE/1960-01-01/2040-01-01}" \
       "$( rcd "$ADMIN" 9901 "'2040-01-01 00:00:00'" )"
 check "after the refusals nothing changed" "2020-01-02 03:04:05" "$( q "$CALDATE" )"
 
+# Not a date: refused with the status, not with error 1292 while the
+# argument is converted (the parameter is a string for that reason); also
+# forms the two servers read differently (an offset, which MySQL applies
+# and MariaDB refuses; fractions, which one rounds and the other cuts)
+FORM="is not a date of the form YYYY-MM-DD hh:mm:ss"
+check "a date that does not exist: refused" \
+      "-1 -1 MySQL: the calibration date was not set: '2019-02-30 00:00:00' $FORM" \
+      "$( rcd "$ADMIN" 9901 "'2019-02-30 00:00:00'" )"
+check "not a date at all: refused" \
+      "-1 -1 MySQL: the calibration date was not set: 'yesterday' $FORM" \
+      "$( rcd "$ADMIN" 9901 "'yesterday'" )"
+check "a time-zone offset: refused" "-1 -1" \
+      "$( rcd "$ADMIN" 9901 "'2019-03-04 05:06:07+00:00'" | cut -d' ' -f1,2 )"
+check "fractions of a second: refused" "-1 -1" \
+      "$( rcd "$ADMIN" 9901 "'2019-03-04 05:06:07.6'" | cut -d' ' -f1,2 )"
+check "an empty string: refused" "-1 -1" \
+      "$( rcd "$ADMIN" 9901 "''" | cut -d' ' -f1,2 )"
+# In a time zone east of UTC, midnight of 1970-01-01 is before the range
+check "1970-01-01 00:00:00 an hour east of UTC: refused" \
+      "-1 -1 MySQL: the calibration date was not set: 1970-01-01 00:00:00 is outside the range a TIMESTAMP can hold" \
+      "$( echo $( q "SET time_zone = '+01:00';
+                     CALL set_rotor_calibration_date( $ADMIN, 9901, '1970-01-01 00:00:00' );
+                     SELECT last_errno(), last_error()" ) )"
+check "after the refusals nothing changed" "2020-01-02 03:04:05" "$( q "$CALDATE" )"
+
 check "an administrator sets the date" "0 0" \
       "$( rcd "$ADMIN" 9901 "'2019-03-04 05:06:07'" )"
 check "... which is stored" "2019-03-04 05:06:07" "$( q "$CALDATE" )"
+check "a date alone: midnight" "0 0 | 2019-03-05 00:00:00" \
+      "$( echo $( q "CALL set_rotor_calibration_date( $ADMIN, 9901, '2019-03-05' );
+                     SELECT last_errno(); SELECT '|'; $CALDATE" ) )"
+# In the connection's time zone: given two hours east of UTC, read in UTC
+check "in the connection's time zone" "0 0 | 2019-03-04 03:06:07" \
+      "$( echo $( q "SET time_zone = '+02:00';
+                     CALL set_rotor_calibration_date( $ADMIN, 9901, '2019-03-04 05:06:07' );
+                     SELECT last_errno(); SELECT '|';
+                     SET time_zone = '+00:00';
+                     $CALDATE" ) )"
+
+# A table whose column cannot hold NULL (a TIMESTAMP declared without
+# NULL): NULL is refused, not turned into the time of the call (MySQL 5.7
+# defaults) or error 1048
+q "UPDATE rotorCalibration SET dateUpdated = '2001-01-01 00:00:00' WHERE dateUpdated IS NULL;
+   ALTER TABLE rotorCalibration MODIFY dateUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP" > /dev/null
+check "NULL when the column cannot hold it: refused, nothing changed" \
+      "-1 -1 MySQL: the calibration date was not set: the column cannot hold NULL in this database | 2019-03-04 05:06:07" \
+      "$( echo $( q "SET time_zone = '+00:00';
+                     CALL set_rotor_calibration_date( $ADMIN, 9901, '2019-03-04 05:06:07' );
+                     CALL set_rotor_calibration_date( $ADMIN, 9901, NULL );
+                     SELECT last_errno(), last_error(); SELECT '|'; $CALDATE" ) | sed 's/^0 //' )"
+q "ALTER TABLE rotorCalibration MODIFY dateUpdated TIMESTAMP NULL" > /dev/null
 check "... and NULL" "0 | NULL" \
       "$( echo $( q "CALL set_rotor_calibration_date( $ADMIN, 9901, NULL ); SELECT '|'; $CALDATE" ) )"
 

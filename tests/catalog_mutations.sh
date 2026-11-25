@@ -12,12 +12,14 @@
 # snapshot taken before the call waited), the GMP rule loosened (2DSA_MC
 # ignored, a substring match, a fraction rounded, a comma-separated string
 # taken as a list) or failing on 1e400, the edit's models read from a
-# stale snapshot, the savepoint logic or the deadlock report broken, the locking read of the highest component ID back, the retries
-# gone, a stale ID reported; in the autoflow procedures that insert a row
-# with the caller's key, a stale ID reported, or one for a record that was
-# not copied; in clear_experiment_fields and set_rotor_calibration_date a
+# stale snapshot, the savepoint logic or the deadlock report broken, the
+# locking read of the highest component ID back, the retries gone, a
+# stale ID reported; in the autoflow procedures that insert a row with
+# the caller's key, a stale ID reported, or one for a record that was not
+# copied; in clear_experiment_fields and set_rotor_calibration_date a
 # permission or not-found check dropped, the wrong field cleared, '' or
-# NOW() stored instead of NULL or the date given, the range check gone;
+# NOW() stored instead of NULL or the date given, the range check, the
+# form check, the invalid-date status or the NOT NULL column guard gone;
 # the version marker wrong, or left behind by a failed load.
 # For each one this writes a broken copy of the file, runs the test that
 # covers it with that copy loaded over the real one -- catalog_smoke.sh
@@ -113,9 +115,12 @@ clear-empty-not-null	us3_exp_procs.sql	s/!= 0, NULL, RIProfile \)/!= 0, '', RIPr
 clear-both-always	us3_exp_procs.sql	s/IF\( COALESCE\( p_clearProtocol,  0 \) != 0, NULL, centrifugeProtocol \)/NULL/
 caldate-any-user	us3_hardware_procs.sql	s/verify_userlevel\( p_personGUID, p_password, \@US3_ADMIN \) = \@OK \) THEN\n    SELECT COUNT\(\*\)\n    INTO   l_count/verify_userlevel( p_personGUID, p_password, \@US3_ANALYST ) = \@OK ) THEN\n    SELECT COUNT(*)\n    INTO   l_count/
 caldate-no-not-found	us3_hardware_procs.sql	s/IF \( l_count = 0 \) THEN\n      SET \@US3_LAST_ERRNO = \@NO_CALIB;/IF ( 0 ) THEN\n      SET \@US3_LAST_ERRNO = \@NO_CALIB;/
-caldate-now	us3_hardware_procs.sql	s/dateUpdated        = p_dateUpdated/dateUpdated        = NOW()/
-caldate-no-range-check	us3_hardware_procs.sql	s/COALESCE\( UNIX_TIMESTAMP\( p_dateUpdated \), 0 \) NOT BETWEEN 1 AND 2147483647/0/
-caldate-null-ignored	us3_hardware_procs.sql	s/dateUpdated        = p_dateUpdated/dateUpdated        = COALESCE( p_dateUpdated, dateUpdated )/
+caldate-now	us3_hardware_procs.sql	s/dateUpdated        = l_date/dateUpdated        = NOW()/
+caldate-no-range-check	us3_hardware_procs.sql	s/COALESCE\( UNIX_TIMESTAMP\( l_date \), 0 \) NOT BETWEEN 1 AND 2147483647/0/
+caldate-null-ignored	us3_hardware_procs.sql	s/dateUpdated        = l_date/dateUpdated        = COALESCE( l_date, dateUpdated )/
+caldate-no-form-check	us3_hardware_procs.sql	s/IF \( p_dateUpdated REGEXP '[^']*' \) THEN/IF ( 1 ) THEN/
+caldate-bad-date-ignored	us3_hardware_procs.sql	s/ELSEIF \( l_bad = 1 \) THEN/ELSEIF ( 0 ) THEN/
+caldate-no-null-guard	us3_hardware_procs.sql	s/ELSEIF \( l_null_ok = 0 \) THEN/ELSEIF ( 0 ) THEN/
 version-dropped-last	us3_procedures.sql	s/(DROP FUNCTION IF EXISTS us3_catalog_version\$\$)(.*?)(CREATE FUNCTION us3_catalog_version)/$2$1\n$3/s
 EOF
 )

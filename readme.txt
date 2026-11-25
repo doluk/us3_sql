@@ -286,9 +286,19 @@ add_rotor_calibration cannot store:
                               dateUpdated )
     sets rotorCalibration.dateUpdated (add_rotor_calibration stores the
     time of the call), in the connection's time zone; NULL stores NULL.
-    Administrators only, as add_rotor_calibration.  Status 0, the
-    login's codes, 201, 519 (no such calibration), or -1 for a date
-    outside the TIMESTAMP range.
+    dateUpdated is a string, 'YYYY-MM-DD hh:mm:ss' or 'YYYY-MM-DD'
+    (midnight); the procedure converts it itself, so that a bad one is
+    answered with a status, not with error 1292 (a client passing a
+    quoted string sees no difference from a DATETIME parameter).  A
+    client that has the time in UTC sets time_zone = '+00:00' for the
+    call.  Administrators only, as add_rotor_calibration.  Status 0, the
+    login's codes, 201, 519 (no such calibration), or -1, changing
+    nothing, for a string of another form (an offset, fractions of a
+    second) or a date that does not exist, a time outside the TIMESTAMP
+    range (in a time zone east of UTC, 1970-01-01 00:00:00 is before
+    it), or NULL where the column is declared NOT NULL (us3.sql declares
+    it TIMESTAMP NULL; a TIMESTAMP declared without NULL would store the
+    time of the call under MySQL 5.7's defaults, or refuse).
 
 A client calls them, inside its transaction, only when
 us3_catalog_version() is 2 or more; otherwise it keeps the old behaviour
