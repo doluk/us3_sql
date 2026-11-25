@@ -31,9 +31,13 @@
 #       transaction;
 #     - a deadlock inside a caller's transaction is raised as error 1213,
 #       not answered with a status (two sessions);
-#     - 1000 models and noise records against 1000 GMP links, and one
-#       model against 20000 links of 9 models each: within
-#       WRITE_PERF_LIMIT seconds (default 5);
+#     - 1000 models and noise records against 1000 GMP links, one model
+#       against 20000 links of 9 models each, and an edit without models
+#       against those links: within WRITE_PERF_LIMIT seconds (default 5);
+#       an edit without models does not read the links at all (two
+#       sessions: it does not wait for a locked one);
+#     - a link that names a model only as a number with an exponent or a
+#       string with a JSON escape still protects it;
 #     - a GMP link after more link text than max_allowed_packet still
 #       protects its model (only when the packet is at most
 #       WRITE_PACKET_LIMIT MB, default 20, as the check writes that much);
@@ -378,6 +382,22 @@ check "a row that is not JSON and names other models: bob may delete 9303" \
                      ROLLBACK;" ) )"
 check "after it nothing changed" "$FULL" "$( q "$STATE" )"
 # The row stays, so every deletion below runs with it in the table
+
+# A row whose text does not hold the model's ID may still name it: as a
+# number with an exponent (9.404e3), or as a string spelled with JSON
+# escapes ("\u0039\u0034\u0030\u0034").  The call does not look one by
+# one at the IDs of rows whose text holds none of the IDs it checks, but
+# must at these.  (The column is a LONGTEXT now, so the text stays as
+# written, also on MySQL, whose JSON type would store 9404.0.)
+for d in '{\"PCSA\":[{\"modelID\":9.404e3}]}' \
+         '{\"PCSA\":[{\"modelID\":\"\\u0039\\u0034\\u0030\\u0034\"}]}'; do
+   q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+        VALUES ( 9706, '$d', 9801 )" > /dev/null
+   check "GMP model 9404 named as $( q "SELECT modelsDesc FROM autoflowModelsLink WHERE autoflowAnalysisID = 9706" ): 9303 is refused" \
+         "201 201 $GMP (models 9404; noise of such models 9503)" \
+         "$( del "$ADMIN" 9303 250 )"
+   q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9706" > /dev/null
+done
 
 # Foreign noise committed after the caller's transaction took its snapshot:
 # carol's model 9408 (on gamma's edit), with noise 9510 recorded against
@@ -804,6 +824,34 @@ echo "   delete_editedData, 20000 links, nothing protected: $( echo "$out" | tai
 check "20000 links, nothing protected: deleted, within $LIMIT s" "0 0 fast" \
       "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
 
+# An edit with no models and no noise: nothing a link could protect, so
+# the call does not read the links at all.  Timed, and checked while
+# another connection holds a lock on one of the links: the call must not
+# wait for it (a lock wait of 1 s would fail it).
+q "INSERT INTO editedData ( editedDataID, rawDataID, editGUID, label, data, filename, comment )
+     VALUES ( 9312, 9201, '00000000-0000-4000-8000-000000009312', 'smoke_none', 'EDIT-9312',
+              'smoke_alpha.none.xml', '' )" > /dev/null
+out=$( timed "START TRANSACTION;
+              CALL delete_editedData( $ALICE, 9312 );
+              SELECT COUNT(*) FROM editedData WHERE editedDataID = 9312;
+              ROLLBACK" )
+echo "   delete_editedData, 20000 links, an edit without models: $( echo "$out" | tail -1 ) s"
+check "20000 links, an edit without models: deleted, within $LIMIT s" "0 0 fast" \
+      "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
+open_session L
+send L "START TRANSACTION;
+        SELECT COUNT(*) FROM autoflowModelsLink WHERE autoflowAnalysisID = 50000 FOR UPDATE;"
+await L l1 || echo "FAIL: link lock session hangs"
+check "... it does not read the links (no wait for a locked one)" "0 0" \
+      "$( echo $( q "SET SESSION innodb_lock_wait_timeout = 1;
+                     START TRANSACTION;
+                     CALL delete_editedData( $ALICE, 9312 );
+                     SELECT COUNT(*) FROM editedData WHERE editedDataID = 9312;
+                     ROLLBACK" ) )"
+send L "ROLLBACK;"
+await L l2
+close_session L
+
 # The last link names the model
 q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
      VALUES ( 79999, '{\"PCSA\":[{\"modelID\":\"21000\"}]}', 9801 )" > /dev/null
@@ -844,6 +892,7 @@ fi
 check "... and without those links alice deletes the edit" "0 0" \
       "$( echo $( q "CALL delete_editedData( $ALICE, 9311 );
                      SELECT COUNT(*) FROM model WHERE modelID = 21000" ) )"
+check "... and the one without models" "0" "$( q "CALL delete_editedData( $ALICE, 9312 )" )"
 
 echo "== create_buffer_component"
 

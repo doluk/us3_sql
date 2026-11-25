@@ -155,12 +155,12 @@ delete_editedData (us3_expdata_procs.sql) now:
     a caller's transaction whose snapshot is older), and looks each model
     ID a link names up
     in the short list of the models in question.  A call therefore costs
-    one pass over that table, linear in its size, and not one pass per
-    model and noise record: 0.2 s rather than 25-110 s for an edit with
-    1000 models and 1000 noise records against 1000 links, and about
-    1.5 s for an edit against 20000 links of 9 models each (the list of
-    every GMP model that version 2 first built took 12-16 s there, and
-    could exceed max_allowed_packet).  The call holds those shared locks
+    one pass over that table, linear in its size: about 0.3 s for an
+    edit with 1000 models and 1000 noise records against 1000 links, and
+    0.5-0.7 s for an edit with a few models against 20000 links of 9
+    models each (it looks at the IDs of a link one by one only when its
+    text may hold one of the edit's model IDs).  For an edit with no
+    models and no noise it does not read the table at all.  The call holds those shared locks
     on every row of autoflowModelsLink (and, under REPEATABLE READ, on
     the gaps between them) until its transaction ends -- inside a
     caller's transaction, until the caller commits or rolls back -- and

@@ -10,7 +10,9 @@
 # create_buffer_component and add_buffer_component a permission, GMP or
 # ownership check dropped, the GMP links read without a lock (a
 # caller's snapshot from before the call waited), records deleted that it
-# did not check (READ COMMITTED), the GMP rule loosened (2DSA_MC
+# did not check (READ COMMITTED), the links read for an edit without
+# models, rows skipped that name a model (all of them, those with a JSON
+# escape, those with an exponent), the GMP rule loosened (2DSA_MC
 # ignored, a substring match, a fraction rounded, a comma-separated string
 # taken as a list) or failing on 1e400, the edit's models read from a
 # stale snapshot, the savepoint logic or the deadlock report broken, the
@@ -71,7 +73,7 @@ del-no-gmp-check	us3_expdata_procs.sql	s/IF \( l_gmp_models IS NOT NULL OR l_gmp
 del-gmp-id-as-text-only	us3_expdata_procs.sql	s/ELSEIF \( LEFT\( l_value, 1 \) IN/ELSEIF ( 0 AND LEFT( l_value, 1 ) IN/
 del-gmp-no-pcsa	us3_expdata_procs.sql	s/'\$\.PCSA\[\*\]\.modelID'/'\$.PCSA_[*].modelID'/
 del-gmp-any-key	us3_expdata_procs.sql	s/JSON_EXTRACT\( l_desc, '\$\."2DSA_IT"\[\*\]\.modelID',\s+'\$\."2DSA_MC"\[\*\]\.modelID',\s+'\$\.PCSA\[\*\]\.modelID' \)/JSON_EXTRACT( l_desc, '\$.*[*].modelID' )/
-del-gmp-no-json-valid	us3_expdata_procs.sql	s/IF \( JSON_VALID\( l_desc \) \) THEN/IF ( 1 ) THEN/
+del-gmp-no-json-valid	us3_expdata_procs.sql	s/SET l_valid = JSON_VALID\( l_desc \);/SET l_valid = 1;/
 del-gmp-invalid-ignored	us3_expdata_procs.sql	s/SET l_pos    = LOCATE\( 'modelID', l_raw \);/SET l_pos    = 0;/
 del-gmp-substring	us3_expdata_procs.sql	s/LOCATE\( CONCAT\( ',', (l_id|(?:n\.)?modelID), ',' \), (l_candidates|l_gmp_ids) \) > 0/LOCATE( $1, $2 ) > 0/g
 del-gmp-no-2dsa-mc	us3_expdata_procs.sql	s/\s+'\$\."2DSA_MC"\[\*\]\.modelID',//
@@ -89,6 +91,11 @@ del-always-own-trx	us3_expdata_procs.sql	s/IF \( l_in_trx = 1 \) THEN\n      SAV
 del-always-savepoint	us3_expdata_procs.sql	s/DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 0;/DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 1;/
 del-no-noise-by-edit	us3_expdata_procs.sql	s/DELETE      FROM noise\n      WHERE       editedDataID = p_editedDataID\n[^;]*;//
 del-no-noise-by-model	us3_expdata_procs.sql	s/DELETE      noise\n      FROM        noise\n      JOIN        model ON \( model\.modelID = noise\.modelID \)\n      WHERE       model\.editedDataID = p_editedDataID\n[^;]*;//
+del-links-read-without-candidates	us3_expdata_procs.sql	s/IF \( l_candidates = ',' \) THEN\n        SET l_done = 1;\n      ELSE\n        OPEN c_links;\n      END IF;/OPEN c_links;/
+del-prefilter-skips-all	us3_expdata_procs.sql	s/IF \( COALESCE\( l_maybe, 1 \) = 0 \) THEN/IF ( 1 ) THEN/
+del-prefilter-substring	us3_expdata_procs.sql	s/IF \( LOCATE\( SUBSTRING\( l_candidates, l_cpos, l_cend - l_cpos \), l_raw \) > 0 \) THEN/IF ( LOCATE( CONCAT( '"', SUBSTRING( l_candidates, l_cpos, l_cend - l_cpos ), '"' ), l_raw ) > 0 ) THEN/
+del-prefilter-no-escape	us3_expdata_procs.sql	s/\( LOCATE\( CHAR\( 92 \), l_raw \) > 0 \)/( 0 )/
+del-prefilter-no-exponent	us3_expdata_procs.sql	s/\( LOCATE\( 'e', l_raw \) > 0 OR LOCATE\( 'E', l_raw \) > 0 \)/( 0 )/
 del-rc-unchecked-noise	us3_expdata_procs.sql	s/\n      AND         LOCATE\( CONCAT\( ',', noiseID, ',' \), l_noise_ids \) > 0;/;/
 del-rc-unchecked-models	us3_expdata_procs.sql	s/\n      AND         LOCATE\( CONCAT\( ',', (?:model\.)?modelID, ',' \), l_model_ids \) > 0;/;/g
 del-1451-as-error	us3_expdata_procs.sql	s/IN \( 1451, 1452 \)/IN ( 9999 )/
@@ -132,8 +139,10 @@ caught=0 survived=0 broken=0 skipped=0
 
 # Mutations that only a MariaDB server can show: MySQL's JSON refuses a
 # number a double cannot hold (1e400), so the guard against it is never
-# reached there
-mariadb_only="del-gmp-huge-number-fails"
+# reached there; and MySQL's JSON_EXTRACT gives a string's escapes
+# unescaped and a whole number written with an exponent as 9404.0, so the
+# pre-filter's guards for both are never needed there
+mariadb_only="del-gmp-huge-number-fails del-prefilter-no-escape del-prefilter-no-exponent"
 server=$( ${MYSQL:-mysql} -N -B -e "SELECT VERSION()" 2> /dev/null )
 
 while IFS=$'\t' read -r name file subst; do

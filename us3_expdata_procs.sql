@@ -1487,7 +1487,9 @@ END$$
 --   between them, until the transaction ends -- the call's own, or the
 --   caller's: meanwhile a connection that inserts, changes or deletes a
 --   GMP link waits (and fails with error 1205 after
---   innodb_lock_wait_timeout, 50 s by default).  On a refusal inside a
+--   innodb_lock_wait_timeout, 50 s by default).  For an edit with no
+--   models and no noise, which no link can protect, the call neither
+--   reads nor locks autoflowModelsLink.  On a refusal inside a
 --   caller's transaction the locks stay until that transaction ends
 --   (InnoDB keeps row locks across ROLLBACK TO SAVEPOINT).
 --   Under READ COMMITTED (a caller's transaction, or the session's
@@ -1773,13 +1775,13 @@ BEGIN
     -- caller's transaction a plain read would see the snapshot that the
     -- plain reads at the start of the call took.  The shared locks hold
     -- every row of the table, and under REPEATABLE READ its gaps, until
-    -- the transaction ends; GMP writers wait meanwhile.  Every row once;
-    -- each ID a row names is looked up in the short candidate list, so
-    -- the call costs one pass over the table, and its time grows
-    -- linearly with the number of links.  Only JSON_VALID, JSON_EXTRACT,
-    -- JSON_LENGTH and JSON_UNQUOTE (MySQL 5.7.8, MariaDB 10.2.3; us3.sql's
-    -- JSON column needs MariaDB 10.2.7), not JSON_TABLE (MySQL 8.0.4,
-    -- MariaDB 10.6).
+    -- the transaction ends; GMP writers wait meanwhile.  Every row once
+    -- (none when there are no candidates); each ID a row names is looked
+    -- up in the short candidate list, so the call costs one pass over the
+    -- table, and its time grows linearly with the number of links.
+    -- Only JSON_VALID, JSON_EXTRACT, JSON_LENGTH and JSON_UNQUOTE (MySQL
+    -- 5.7.8, MariaDB 10.2.3; us3.sql's JSON column needs MariaDB 10.2.7),
+    -- not JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).
     BEGIN
       DECLARE l_done   TINYINT DEFAULT 0;
       DECLARE l_desc   LONGTEXT CHARACTER SET utf8mb4;
@@ -1794,6 +1796,11 @@ BEGIN
       DECLARE l_end    INT;
       DECLARE l_length INT;
       DECLARE l_number DOUBLE;
+      DECLARE l_valid  TINYINT;
+      DECLARE l_few    TINYINT;
+      DECLARE l_maybe  TINYINT;
+      DECLARE l_cpos   INT;
+      DECLARE l_cend   INT;
 
       DECLARE c_links CURSOR FOR
         SELECT modelsDesc
@@ -1803,19 +1810,75 @@ BEGIN
 
       DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
 
-      OPEN c_links;
+      -- With no candidates (an edit with no models and no noise) there is
+      -- nothing a link could protect, and the table is not read at all
+      IF ( l_candidates = ',' ) THEN
+        SET l_done = 1;
+      ELSE
+        OPEN c_links;
+      END IF;
+
+      -- With a few candidates, the IDs a row names are looked at one by
+      -- one only when its text may hold one of them; see below
+      SET l_few = ( LENGTH( l_candidates ) - LENGTH( REPLACE( l_candidates, ',', '' ) ) <= 33 );
 
       links: LOOP
-        FETCH c_links INTO l_desc;
+        IF ( l_done = 0 ) THEN
+          FETCH c_links INTO l_desc;
+        END IF;
         IF ( l_done = 1 ) THEN
           LEAVE links;
         END IF;
 
-        IF ( JSON_VALID( l_desc ) ) THEN
+        SET l_valid = JSON_VALID( l_desc );
+        IF ( l_valid ) THEN
           -- An array of the stages' modelID values, NULL when there are none
           SET l_ids   = JSON_EXTRACT( l_desc, '$."2DSA_IT"[*].modelID',
                                               '$."2DSA_MC"[*].modelID',
                                               '$.PCSA[*].modelID' );
+          SET l_raw   = CAST( l_ids AS BINARY );
+        ELSE
+          SET l_raw   = CAST( l_desc AS BINARY );
+        END IF;
+
+        -- The pre-filter.  Taking the IDs one by one is what a row costs,
+        -- and most rows name none of the candidates.  Text that holds none
+        -- of their IDs, bytewise, names none -- by the rules below a
+        -- string must be the ID itself, a number written without an
+        -- exponent holds its digits (9404.0 holds 9404), and a row that is
+        -- not JSON is read by its digits -- unless it is JSON with a
+        -- backslash (an escape such as \u0039 can spell a digit) or an e
+        -- (an exponent: 9.404e3) in it.  For JSON the text is that of the
+        -- stages' modelID values alone (l_ids: no GUID, no key), so the
+        -- test is short.  With many candidates (one LOCATE each would
+        -- cost more than it saves) every row is looked at.
+        IF ( l_few = 1 ) THEN
+          SET l_maybe = 0;
+          SET l_cpos  = 2;
+          WHILE ( l_maybe = 0 AND l_cpos < LENGTH( l_candidates ) ) DO
+            SET l_cend = LOCATE( ',', l_candidates, l_cpos );
+            IF ( LOCATE( SUBSTRING( l_candidates, l_cpos, l_cend - l_cpos ), l_raw ) > 0 ) THEN
+              SET l_maybe = 1;
+            END IF;
+            SET l_cpos = l_cend + 1;
+          END WHILE;
+
+          IF ( l_maybe = 0 AND l_valid AND
+               ( LOCATE( CHAR( 92 ), l_raw ) > 0 ) ) THEN
+            SET l_maybe = 1;
+          END IF;
+
+          IF ( l_maybe = 0 AND l_valid AND
+               ( LOCATE( 'e', l_raw ) > 0 OR LOCATE( 'E', l_raw ) > 0 ) ) THEN
+            SET l_maybe = 1;
+          END IF;
+
+          IF ( COALESCE( l_maybe, 1 ) = 0 ) THEN
+            ITERATE links;
+          END IF;
+        END IF;
+
+        IF ( l_valid ) THEN
           SET l_count = COALESCE( JSON_LENGTH( l_ids ), 0 );
           SET l_i     = 0;
 
@@ -1852,8 +1915,7 @@ BEGIN
           END WHILE;
 
         ELSE
-          -- Not JSON: the digits after each "modelID", bytewise
-          SET l_raw    = CAST( l_desc AS BINARY );
+          -- Not JSON: the digits after each "modelID", bytewise (l_raw)
           SET l_length = LENGTH( l_raw );
           SET l_pos    = LOCATE( 'modelID', l_raw );
 
@@ -1884,7 +1946,9 @@ BEGIN
 
       END LOOP;
 
-      CLOSE c_links;
+      IF ( l_candidates != ',' ) THEN
+        CLOSE c_links;
+      END IF;
     END;
 
     -- The edit's records that go with a GMP model (l_gmp_ids holds only
