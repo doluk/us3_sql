@@ -1142,6 +1142,10 @@ END$$
 -- @NO_EXPERIMENT (508) when the experiment does not exist; @NOTPERMITTED
 -- (201) when the caller may not modify it.
 --
+-- It needs verify_catalog_experiment() from us3_catalog_procs.sql, which
+-- us3_procedures.sql loads; when loading this file on its own, load that
+-- one too, or the call fails with error 1305.
+--
 -- Added with us3_catalog_version() 2.
 DROP PROCEDURE IF EXISTS clear_experiment_fields$$
 CREATE PROCEDURE clear_experiment_fields ( p_personGUID      CHAR(36),

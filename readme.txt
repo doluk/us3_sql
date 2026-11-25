@@ -280,7 +280,9 @@ add_rotor_calibration cannot store:
     (update_experiment stores '' for NULL).  Allowed to an administrator
     and to anyone with an experimentPerson row for the experiment
     (verify_catalog_experiment; experiment 1 gets no special treatment).
-    Status 0, the login's codes, 201 or 508.
+    Status 0, the login's codes, 201 or 508.  verify_catalog_experiment
+    is in us3_catalog_procs.sql, so load that file too when loading
+    us3_exp_procs.sql on its own.
 
   set_rotor_calibration_date( personGUID, password, rotorCalibrationID,
                               dateUpdated )
