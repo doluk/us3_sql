@@ -8,9 +8,10 @@ write_procs_test.sh   live test of delete_editedData and of the procedures
                       that report a new record's ID (create_buffer_component,
                       add_buffer_component, and the autoflow ones that
                       insert a row with a key of their caller's), and of
-                      the version marker us3_catalog_version(), and of
+                      the version marker us3_catalog_version(), of
                       clear_experiment_fields and
-                      set_rotor_calibration_date
+                      set_rotor_calibration_date, and of
+                      verify_model_permission
 
 All of them run against a real server: they create a scratch database, load
 us3.sql, us3_procedures.sql and catalog_fixture.sql into it, and drop it
