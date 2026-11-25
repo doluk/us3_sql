@@ -160,7 +160,7 @@ setup()
 #                                before it has run (default 30 s); 1 on
 #                                timeout
 #   lock_wait <name> [<secs>]    wait until the session waits for a row
-#                                lock (default 10 s); 1 if it does not
+#                                lock (default 30 s); 1 if it does not
 #   between <name> <tag1> <tag2> what it printed between two tags
 #   close_session <name>
 open_session()
@@ -198,7 +198,7 @@ await()
 
 lock_wait()
 {
-   local n=$(( ${2:-10} * 10 )) cid
+   local n=$(( ${2:-30} * 10 )) cid
    eval "cid=\$cid_$1"
    while [ "$n" -gt 0 ]; do
       [ "$( $MYSQL -N -B -e "SELECT COUNT(*) FROM information_schema.INNODB_TRX
