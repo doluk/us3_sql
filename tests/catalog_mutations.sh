@@ -145,6 +145,18 @@ caught=0 survived=0 broken=0 skipped=0
 mariadb_only="del-gmp-huge-number-fails del-prefilter-no-escape del-prefilter-no-exponent"
 server=$( ${MYSQL:-mysql} -N -B -e "SELECT VERSION()" 2> /dev/null )
 
+# Mutations that only a client stopping at an error in a sourced file can
+# show, as the MySQL client does: the MariaDB client (10.11) reports the
+# error, goes on and exits 0, and write_procs_test.sh then skips the
+# check that a failed load leaves no version marker behind
+stops_only="version-dropped-last"
+printf 'SELECT no_such_column;\nSELECT 1;\n' > "$tmp/probe.sql"
+if ${MYSQL:-mysql} -e "SOURCE $tmp/probe.sql" > /dev/null 2>&1; then
+   client_stops=0
+else
+   client_stops=1
+fi
+
 while IFS=$'\t' read -r name file subst; do
    [ -z "$name" ] && continue
    if [ $# -gt 0 ] && ! printf '%s\n' "$@" | grep -qx "$name"; then
@@ -153,6 +165,12 @@ while IFS=$'\t' read -r name file subst; do
 
    if [[ "$server" != *MariaDB* ]] && printf '%s\n' $mariadb_only | grep -qx "$name"; then
       echo "skipped  $name: only a MariaDB server can show it"
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+
+   if [ "$client_stops" = 0 ] && printf '%s\n' $stops_only | grep -qx "$name"; then
+      echo "skipped  $name: this client goes on after an error in a sourced file"
       skipped=$(( skipped + 1 ))
       continue
    fi
