@@ -122,7 +122,8 @@ experiment 1 or to anyone at all, not logging in first, clearing the
 wrong field or both, or storing '' rather than NULL;
 set_rotor_calibration_date open to investigators, without its not-found
 or range check, its form or length check, its invalid-date status or its NOT NULL
-guard, storing NOW() or ignoring NULL; the version marker in
+guard, storing NOW() or ignoring NULL; verify_model_permission
+matching the @US3_ID of the previous login; the version marker in
 us3_procedures.sql answering 1, or dropped only just before it is
 created.  It prints
 "caught" or "SURVIVED" for each, and "skipped" for those the server or
@@ -218,6 +219,10 @@ changing nothing; an administrator's date is stored as given, in the
 connection's time zone (given at +02:00, read at UTC), a date alone as
 midnight, and NULL as NULL -- but where the column is NOT NULL (the test
 makes it so for a moment) NULL is refused with -1.
+
+verify_model_permission (through get_model_info and delete_model): lets
+a model's owner in on a new connection, and refuses another
+investigator also after the owner's login on the same connection.
 
 us3_catalog_version() answers 2, and a load of us3_procedures.sql that
 fails half-way leaves no such function behind, not even one an earlier

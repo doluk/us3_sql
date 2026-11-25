@@ -183,6 +183,15 @@ deletes all noise fitted with the edit's models that it may delete, also
 noise computed from another investigator's edit in another experiment
 (a global fit).  The procedure's header lists exactly what goes.
 
+verify_model_permission (us3_model_procs.sql), which update_model,
+get_model_info, delete_model, new_noise and update_noise use, matches the
+model's modelPerson row against the caller once the caller has logged
+in.  It matched it against the @US3_ID of the previous login on the
+connection: on a new connection the model's owner was refused (201)
+unless something had logged in first, as UltraScan3 does when it
+connects, and after another person's login on the same connection the
+caller was let in to that person's models.
+
 create_buffer_component (us3_buffer_procs.sql) no longer reads the
 highest ID with a locking read, which inside a caller's transaction held
 a gap lock until it ended and deadlocked other connections creating

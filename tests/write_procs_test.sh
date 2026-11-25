@@ -72,6 +72,11 @@
 #       date of the form YYYY-MM-DD[ hh:mm:ss], and NULL where the column
 #       is NOT NULL.
 #
+#   verify_model_permission() (us3_model_procs.sql), through
+#   get_model_info and delete_model
+#     - lets the model's owner in on a new connection, and nobody else
+#       after the owner's login on the same connection.
+#
 #   us3_catalog_version() (us3_procedures.sql)
 #     - answers 2, and is gone after a load of us3_procedures.sql that
 #       failed half-way (with a client that stops at the error, as the
@@ -1210,6 +1215,30 @@ check "NULL when the column cannot hold it: refused, nothing changed" \
 q "ALTER TABLE rotorCalibration MODIFY dateUpdated TIMESTAMP NULL" > /dev/null
 check "... and NULL" "0 | NULL" \
       "$( echo $( q "CALL set_rotor_calibration_date( $ADMIN, 9901, NULL ); SELECT '|'; $CALDATE" ) )"
+
+echo "== verify_model_permission"
+
+# It matched the model's modelPerson row against the @US3_ID of the last
+# login on the connection, before logging the caller in: on a new
+# connection (each q is one) the owner was refused, and after somebody
+# else's login the caller got that person's models.  Left: alice's 9402
+# and 9407, bob's 9405.
+check "get_model_info: the owner, on a new connection" "0" \
+      "$( q "CALL get_model_info( $ALICE, 9402 )" | head -1 )"
+check "... another investigator is refused" "201" \
+      "$( q "CALL get_model_info( $BOB, 9402 )" | head -1 )"
+check "... also after the owner's login on the same connection" "201" \
+      "$( q "SET @s = verify_user( $ALICE );
+             CALL get_model_info( $BOB, 9402 )" | head -1 )"
+check "delete_model: the owner, on a new connection (rolled back)" "0 0" \
+      "$( echo $( q "START TRANSACTION;
+                     CALL delete_model( $ALICE, 9407 );
+                     SELECT COUNT(*) FROM model WHERE modelID = 9407;
+                     ROLLBACK" ) )"
+check "... another investigator is refused, also after the owner's login" "201 1" \
+      "$( echo $( q "SET @s = verify_user( $BOB );
+                     CALL delete_model( $ALICE, 9405 );
+                     SELECT COUNT(*) FROM model WHERE modelID = 9405" ) )"
 
 echo "== us3_catalog_version"
 
