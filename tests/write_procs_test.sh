@@ -77,6 +77,12 @@
 #     - lets the model's owner in on a new connection, and nobody else
 #       after the owner's login on the same connection.
 #
+#   timestamp2UTC() (us3_procedures.sql)
+#     - converts with the offset in force at the time given, in the
+#       connection's time zone, also on a connection that has not logged
+#       in; a winter and a summer time in Europe/Berlin where the server
+#       can give that zone (time zone tables, or TZ=Europe/Berlin).
+#
 #   us3_catalog_version() (us3_procedures.sql)
 #     - answers 2, and is gone after a load of us3_procedures.sql that
 #       failed half-way (with a client that stops at the error, as the
@@ -1239,6 +1245,59 @@ check "... another investigator is refused, also after the owner's login" "201 1
       "$( echo $( q "SET @s = verify_user( $BOB );
                      CALL delete_model( $ALICE, 9405 );
                      SELECT COUNT(*) FROM model WHERE modelID = 9405" ) )"
+
+echo "== timestamp2UTC"
+
+# The catalog procedures and others report TIMESTAMP columns through
+# timestamp2UTC().  It must use the offset in force at the time given,
+# in the connection's time zone, with or without time zone tables, and
+# also on a new connection that has not logged in (it added the offset
+# config() records at a login, NULL until then, and the current offset
+# to a summer time in winter).
+check "a fixed offset, on a new connection" "2020-01-15 07:00:00" \
+      "$( q "SET time_zone = '+05:00';
+             SELECT timestamp2UTC( '2020-01-15 12:00:00' )" )"
+check "... and after a login" "2020-07-15 07:00:00" \
+      "$( q "SET time_zone = '+05:00';
+             SET @s = verify_user( $ALICE );
+             SELECT timestamp2UTC( '2020-07-15 12:00:00' )" )"
+check "NULL" "NULL" "$( q "SELECT IFNULL( timestamp2UTC( NULL ), 'NULL' )" )"
+check "outside the TIMESTAMP range, in UTC: as it is" "1960-01-01 00:00:00" \
+      "$( q "SET time_zone = '+00:00';
+             SET @s = verify_user( $ALICE );
+             SELECT timestamp2UTC( '1960-01-01 00:00:00' )" )"
+
+# Daylight saving time: Europe/Berlin is UTC+1 in winter, UTC+2 in
+# summer.  As a named zone where the time zone tables are loaded, or as
+# the server's own zone (a server started with TZ=Europe/Berlin);
+# otherwise skipped.
+if [ "$( q "SELECT CONVERT_TZ( '2020-07-15 12:00:00', 'Europe/Berlin', 'UTC' )" )" = "2020-07-15 10:00:00" ]; then
+   zone="'Europe/Berlin'"
+elif [ "$( q "SET time_zone = 'SYSTEM';
+              SELECT CONCAT( UNIX_TIMESTAMP( '2020-01-15 12:00:00' ), ' ',
+                             UNIX_TIMESTAMP( '2020-07-15 12:00:00' ) )" )" = "1579086000 1594807200" ]; then
+   zone="'SYSTEM'"
+else
+   zone=""
+   echo "note: neither the time zone tables nor the server's zone give Europe/Berlin;" \
+        "the daylight-saving checks of timestamp2UTC are skipped"
+fi
+if [ -n "$zone" ]; then
+   echo "   timestamp2UTC: daylight saving checked with time_zone = $zone"
+   check "a winter and a summer time, after a login" \
+         "2020-01-15 11:00:00 2020-07-15 10:00:00" \
+         "$( echo $( q "SET time_zone = $zone;
+                        SET @s = verify_user( $ALICE );
+                        SELECT timestamp2UTC( '2020-01-15 12:00:00' );
+                        SELECT timestamp2UTC( '2020-07-15 12:00:00' )" ) )"
+   check "... a TIMESTAMP column of either half of the year" \
+         "2020-01-15 11:00:00 2020-07-15 10:00:00" \
+         "$( echo $( q "SET time_zone = $zone;
+                        CREATE TEMPORARY TABLE smoke_ts ( t TIMESTAMP NULL );
+                        INSERT INTO smoke_ts VALUES ( '2020-01-15 12:00:00' ), ( '2020-07-15 12:00:00' );
+                        SET @s = verify_user( $ALICE );
+                        SELECT timestamp2UTC( t ) FROM smoke_ts ORDER BY t" ) )"
+fi
 
 echo "== us3_catalog_version"
 

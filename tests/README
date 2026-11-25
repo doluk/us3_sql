@@ -124,7 +124,8 @@ wrong field or both, or storing '' rather than NULL;
 set_rotor_calibration_date open to investigators, without its not-found
 or range check, its form or length check, its invalid-date status or its NOT NULL
 guard, storing NOW() or ignoring NULL; verify_model_permission
-matching the @US3_ID of the previous login; the version marker in
+matching the @US3_ID of the previous login; timestamp2UTC converting
+with the current offset; the version marker in
 us3_procedures.sql answering 1, or dropped only just before it is
 created.  It prints
 "caught" or "SURVIVED" for each, and "skipped" for those the server or
@@ -224,6 +225,13 @@ makes it so for a moment) NULL is refused with -1.
 verify_model_permission (through get_model_info and delete_model): lets
 a model's owner in on a new connection, and refuses another
 investigator also after the owner's login on the same connection.
+
+timestamp2UTC: converts a time in the connection's time zone to UTC with
+the offset in force at that time -- a fixed offset on a new connection
+that has not logged in, NULL, a time before 1970 -- and, where the
+server can give Europe/Berlin (time zone tables loaded, or the server
+started with TZ=Europe/Berlin; otherwise the test says it skips this), a
+winter and a summer time, also from a TIMESTAMP column.
 
 us3_catalog_version() answers 2, and a load of us3_procedures.sql that
 fails half-way leaves no such function behind, not even one an earlier

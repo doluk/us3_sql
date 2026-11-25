@@ -23,7 +23,8 @@
 # permission or not-found check dropped, the wrong field cleared, '' or
 # NOW() stored instead of NULL or the date given, the range check, the
 # form check, the invalid-date status or the NOT NULL column guard gone;
-# verify_model_permission matching the previous login's @US3_ID; the
+# verify_model_permission matching the previous login's @US3_ID;
+# timestamp2UTC with the current offset rather than the time's; the
 # version marker wrong, or left behind by a failed load.
 # For each one this writes a broken copy of the file, runs the test that
 # covers it with that copy loaded over the real one -- catalog_smoke.sh
@@ -118,6 +119,7 @@ af-velmwl-stale-id	us3_autoflow_procs.sql	s/SET \@LAST_INSERT_ID = p_autoflowID;
 af-esign-stale-id	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)SET \@LAST_INSERT_ID = p_ID;/$1SET \@LAST_INSERT_ID = LAST_INSERT_ID();/s
 af-esign-no-rowcount	us3_autoflow_procs.sql	s/(INSERT INTO autoflowGMPReportEsignHistory SELECT .*?)IF \( ROW_COUNT\(\) > 0 \) THEN/$1IF ( 1 ) THEN/s
 model-perm-stale-login	us3_model_procs.sql	s/(  DECLARE count_permissions INT;.*?)(  IF \( count_models = 0 \) THEN.*?)    SELECT COUNT\(\*\)\n    INTO   count_permissions\n    FROM   modelPerson\n    WHERE  modelID = p_modelID\n    AND    personID = \@US3_ID;\n/$1  SELECT COUNT(*) INTO count_permissions FROM modelPerson WHERE modelID = p_modelID AND personID = \@US3_ID;\n\n$2/s
+utc-current-offset	us3_procedures.sql	s/IF \( l_seconds > 0 \) THEN/IF ( 0 ) THEN/
 version-wrong	us3_procedures.sql	s/RETURN\( 2 \);/RETURN( 1 );/
 clear-magic-experiment-1	us3_exp_procs.sql	s/ELSEIF \( verify_catalog_experiment\( p_experimentID \) != \@OK \) THEN/ELSEIF ( verify_experiment_permission( p_personGUID, p_password, p_experimentID ) != \@OK ) THEN/
 clear-no-permission	us3_exp_procs.sql	s/ELSEIF \( verify_catalog_experiment\( p_experimentID \) != \@OK \) THEN/ELSEIF ( 0 ) THEN/

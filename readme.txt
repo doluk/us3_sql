@@ -179,6 +179,19 @@ connects, and after another person's login on the same connection the
 caller was let in to that person's models.
 
 
+timestamp2UTC (changed behaviour)
+
+timestamp2UTC (us3_procedures.sql), through which the catalog
+procedures and many others report TIMESTAMP columns as UTC, converts
+with the offset in force at the time given, in the connection's time
+zone (UNIX_TIMESTAMP(), which applies the zone's daylight-saving rules
+without the time zone tables).  It used the time zone tables, when
+loaded, from the server's global zone whatever the connection's zone,
+and otherwise the offset of the moment of the last login: a summer time
+read in winter (or the other way round) came out an hour off, and on a
+connection that had not logged in yet the result was NULL.  Times
+outside the TIMESTAMP range are converted as before.
+
 create_buffer_component (changed behaviour)
 
 create_buffer_component (us3_buffer_procs.sql) reads the highest ID
@@ -209,8 +222,8 @@ answers the version of the procedures loaded:
      delete_editedData and the autoflow inserts that report the key they
      inserted;
   2  as 1, plus clear_experiment_fields and set_rotor_calibration_date
-     (below), and delete_editedData and verify_model_permission as
-     described above.  No procedure that existed before version 1
+     (below), and delete_editedData, verify_model_permission and
+     timestamp2UTC as described above.  No procedure that existed before version 1
      changed its parameter list; the new set_rotor_calibration_date
      takes its date as a string (TEXT), not a DATETIME.
 
@@ -259,7 +272,8 @@ declares autoflowModelsLink.modelsDesc as JSON, a type MariaDB has from
 10.2.7 (an alias for LONGTEXT; a CHECK ( JSON_VALID(...) ) since 10.4.3).
 Nothing needs JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).  The tests run on
 MySQL 8.0.46 and MariaDB 10.11 (tests/README); the write test also on
-MySQL 8.0 with lower_case_table_names = 1.
+MySQL 8.0 with lower_case_table_names = 1, and on MariaDB 10.11 running
+in Europe/Berlin, with and without the time zone tables.
 
 
 Upstream
