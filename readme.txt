@@ -304,7 +304,7 @@ add_rotor_calibration cannot store:
     call.  Administrators only, as add_rotor_calibration.  Status 0, the
     login's codes, 201, 519 (no such calibration), or -1, changing
     nothing, for a string of another form (an offset, fractions of a
-    second) or a date that does not exist, a time outside the TIMESTAMP
+    second, a trailing newline) or a date that does not exist, a time outside the TIMESTAMP
     range (in a time zone east of UTC, 1970-01-01 00:00:00 is before
     it), or NULL where the column is declared NOT NULL (us3.sql declares
     it TIMESTAMP NULL; a TIMESTAMP declared without NULL would store the

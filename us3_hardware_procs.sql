@@ -1879,8 +1879,10 @@ BEGIN
 
     IF ( p_dateUpdated IS NOT NULL ) THEN
       -- The form first: CAST alone reads other forms differently on MySQL
-      -- and MariaDB (MySQL applies an offset, MariaDB refuses it)
-      IF ( p_dateUpdated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{2}:[0-9]{2}:[0-9]{2})?$' ) THEN
+      -- and MariaDB (MySQL applies an offset, MariaDB refuses it).  The
+      -- length too: MariaDB's $ also matches before a final newline
+      IF ( LENGTH( p_dateUpdated ) IN ( 10, 19 ) AND
+           p_dateUpdated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{2}:[0-9]{2}:[0-9]{2})?$' ) THEN
         BEGIN
           -- A date that does not exist: NULL, with warning 1292
           DECLARE CONTINUE HANDLER FOR SQLEXCEPTION, SQLWARNING SET l_bad = 1;

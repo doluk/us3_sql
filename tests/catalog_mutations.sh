@@ -128,7 +128,8 @@ caldate-no-not-found	us3_hardware_procs.sql	s/IF \( l_count = 0 \) THEN\n      S
 caldate-now	us3_hardware_procs.sql	s/dateUpdated        = l_date/dateUpdated        = NOW()/
 caldate-no-range-check	us3_hardware_procs.sql	s/COALESCE\( UNIX_TIMESTAMP\( l_date \), 0 \) NOT BETWEEN 1 AND 2147483647/0/
 caldate-null-ignored	us3_hardware_procs.sql	s/dateUpdated        = l_date/dateUpdated        = COALESCE( l_date, dateUpdated )/
-caldate-no-form-check	us3_hardware_procs.sql	s/IF \( p_dateUpdated REGEXP '[^']*' \) THEN/IF ( 1 ) THEN/
+caldate-no-form-check	us3_hardware_procs.sql	s/IF \( LENGTH\( p_dateUpdated \) IN \( 10, 19 \) AND\n\s+p_dateUpdated REGEXP '[^']*' \) THEN/IF ( 1 ) THEN/
+caldate-no-length-check	us3_hardware_procs.sql	s/LENGTH\( p_dateUpdated \) IN \( 10, 19 \) AND/1 AND/
 caldate-bad-date-ignored	us3_hardware_procs.sql	s/ELSEIF \( l_bad = 1 \) THEN/ELSEIF ( 0 ) THEN/
 caldate-no-null-guard	us3_hardware_procs.sql	s/ELSEIF \( l_null_ok = 0 \) THEN/ELSEIF ( 0 ) THEN/
 version-dropped-last	us3_procedures.sql	s/(DROP FUNCTION IF EXISTS us3_catalog_version\$\$)(.*?)(CREATE FUNCTION us3_catalog_version)/$2$1\n$3/s
@@ -141,8 +142,10 @@ caught=0 survived=0 broken=0 skipped=0
 # number a double cannot hold (1e400), so the guard against it is never
 # reached there; and MySQL's JSON_EXTRACT gives a string's escapes
 # unescaped and a whole number written with an exponent as 9404.0, so the
-# pre-filter's guards for both are never needed there
-mariadb_only="del-gmp-huge-number-fails del-prefilter-no-escape del-prefilter-no-exponent"
+# pre-filter's guards for both are never needed there; and MySQL's REGEXP
+# does not match a date with a trailing newline, as MariaDB's does
+mariadb_only="del-gmp-huge-number-fails del-prefilter-no-escape del-prefilter-no-exponent
+              caldate-no-length-check"
 server=$( ${MYSQL:-mysql} -N -B -e "SELECT VERSION()" 2> /dev/null )
 
 # Mutations that only a client stopping at an error in a sourced file can

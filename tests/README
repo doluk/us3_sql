@@ -121,7 +121,7 @@ when nothing was copied; clear_experiment_fields open to anyone on
 experiment 1 or to anyone at all, not logging in first, clearing the
 wrong field or both, or storing '' rather than NULL;
 set_rotor_calibration_date open to investigators, without its not-found
-or range check, its form check, its invalid-date status or its NOT NULL
+or range check, its form or length check, its invalid-date status or its NOT NULL
 guard, storing NOW() or ignoring NULL; the version marker in
 us3_procedures.sql answering 1, or dropped only just before it is
 created.  It prints
@@ -130,7 +130,8 @@ the client cannot show: on a server other than MariaDB, the one about
 1e400 (only MariaDB's JSON accepts it) and the two about the escape and
 exponent guards of the pre-filter (MySQL's JSON_EXTRACT unescapes
 strings and prints a whole number as 9404.0, so they are never needed
-there); with a client that goes on after an error in a sourced file,
+there) and the one about set_rotor_calibration_date's length check (a
+trailing newline passes only MariaDB's REGEXP); with a client that goes on after an error in a sourced file,
 as the MariaDB client does, the one about the version marker left
 behind by a failed load (write_procs_test.sh skips that check then).
 It exits 1 if any survived, 2 if a
@@ -212,6 +213,7 @@ a calibration that does not exist (519), and dates before 1970 or after
 1970-01-01 00:00:00 an hour east of UTC -- and, with -1 rather than
 error 1292, a date that does not exist, a string that is no date, an
 empty one, one with a time-zone offset or with fractions of a second,
+one with a trailing newline (MariaDB's REGEXP lets $ match before it),
 changing nothing; an administrator's date is stored as given, in the
 connection's time zone (given at +02:00, read at UTC), a date alone as
 midnight, and NULL as NULL -- but where the column is NOT NULL (the test

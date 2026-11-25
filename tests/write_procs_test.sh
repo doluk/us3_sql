@@ -1169,6 +1169,11 @@ check "fractions of a second: refused" "-1 -1" \
       "$( rcd "$ADMIN" 9901 "'2019-03-04 05:06:07.6'" | cut -d' ' -f1,2 )"
 check "an empty string: refused" "-1 -1" \
       "$( rcd "$ADMIN" 9901 "''" | cut -d' ' -f1,2 )"
+# MariaDB's REGEXP lets $ match before a final newline
+check "a trailing newline: refused" "-1 -1" \
+      "$( rcd "$ADMIN" 9901 "CONCAT( '2019-03-04 05:06:07', CHAR( 10 ) )" | cut -d' ' -f1,2 )"
+check "a date alone with a trailing newline: refused" "-1 -1" \
+      "$( rcd "$ADMIN" 9901 "CONCAT( '2019-03-04', CHAR( 10 ) )" | cut -d' ' -f1,2 )"
 # In a time zone east of UTC, midnight of 1970-01-01 is before the range
 check "1970-01-01 00:00:00 an hour east of UTC: refused" \
       "-1 -1 MySQL: the calibration date was not set: 1970-01-01 00:00:00 is outside the range a TIMESTAMP can hold" \
