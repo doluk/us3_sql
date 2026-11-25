@@ -15,7 +15,8 @@
 #       investigator's models and noise, for anyone but an administrator --
 #       also when they were committed after the caller's transaction took
 #       its snapshot -- and a GMP link committed while the call waits for
-#       a row lock (three sessions);
+#       a row lock (three sessions; in autocommit, after START
+#       TRANSACTION and with autocommit off);
 #     - deletes the edit, its models and their noise wherever it was
 #       recorded (also noise computed from another experiment's edit),
 #       and the noise recorded against the edit for a model of another
@@ -439,30 +440,43 @@ check "... and nothing changed" "$FULL" "$( q "$STATE" )"
 # sessions).  A holds a lock on model 9402 of edit 9302; B, an
 # administrator, deletes 9302 and waits for that lock; meanwhile a third
 # connection records a GMP link naming 9402, and then A lets go.  B must
-# read the links only once it has its locks, and so refuse.  (Reading them
-# before the locks, B deleted the GMP model.)
-open_session A
-open_session B
-send A "START TRANSACTION;
-        SELECT modelID FROM model WHERE modelID = 9402 FOR UPDATE;"
-await A a1 || echo "FAIL: GMP race: session A hangs"
-send B "CALL delete_editedData( $ADMIN, 9302 );
-        SELECT LEFT( last_error(), 250 );"
-if lock_wait B; then
-   q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
-        VALUES ( 9703, '{\"PCSA\":[{\"modelID\":\"9402\"}]}', 9801 )" > /dev/null
-   send A "COMMIT;"
-   await A a2 || echo "FAIL: GMP race: session A hangs"
-   await B b1 || echo "FAIL: GMP race: session B hangs"
-   check "a GMP link committed while the call waits for a row lock: refused" \
-         "201 $GMP (models 9402)" "$( echo $( between B opened b1 ) )"
-else
-   check "GMP race: session B waits for A's lock on model 9402" "waits" "does not"
-fi
-close_session A
-close_session B
-q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9703" > /dev/null
-check "... and nothing changed" "$FULL" "$( q "$STATE" )"
+# read the links only once it has its locks, and as they are, and so
+# refuse.  In autocommit the call's own transaction takes its snapshot
+# after the wait; inside a transaction B opened (START TRANSACTION, or
+# autocommit off, as UltraScan3 calls it), the call's first plain reads
+# take it before, and a plain read of the links missed the new one.
+# gmp_race <label> <statements B runs before the call>
+gmp_race()
+{
+   open_session A
+   open_session B
+   send A "START TRANSACTION;
+           SELECT modelID FROM model WHERE modelID = 9402 FOR UPDATE;"
+   await A a1 || echo "FAIL: GMP race ($1): session A hangs"
+   send B "$2
+           CALL delete_editedData( $ADMIN, 9302 );
+           SELECT LEFT( last_error(), 250 );
+           SELECT COUNT(*) FROM model WHERE modelID = 9402;
+           ROLLBACK;"
+   if lock_wait B; then
+      q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+           VALUES ( 9703, '{\"PCSA\":[{\"modelID\":\"9402\"}]}', 9801 )" > /dev/null
+      send A "COMMIT;"
+      await A a2 || echo "FAIL: GMP race ($1): session A hangs"
+      await B b1 || echo "FAIL: GMP race ($1): session B hangs"
+      check "a GMP link committed while the call waits for a row lock ($1): refused" \
+            "201 $GMP (models 9402) 1" "$( echo $( between B opened b1 ) )"
+   else
+      check "GMP race ($1): session B waits for A's lock on model 9402" "waits" "does not"
+   fi
+   close_session A
+   close_session B
+   q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9703" > /dev/null
+   check "... and nothing changed" "$FULL" "$( q "$STATE" )"
+}
+gmp_race "autocommit" ""
+gmp_race "after START TRANSACTION" "START TRANSACTION;"
+gmp_race "with autocommit off" "SET autocommit = 0;"
 
 echo "== delete_editedData: all or nothing"
 

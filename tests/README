@@ -105,8 +105,8 @@ files: delete_editedData with experiment 1 open to anyone, the edit-1
 refusal, the GMP or ownership checks dropped or loosened (numbers, PCSA
 or the key ignored, a substring match, no JSON_VALID guard, rows that are
 not JSON ignored), those checks
-reading a stale snapshot, the GMP links read (a snapshot taken) before
-the row locks, the GMP rule loosened (2DSA_MC ignored, a substring match,
+reading a stale snapshot, the GMP links read without a lock (from a
+caller's snapshot older than the row locks), the GMP rule loosened (2DSA_MC ignored, a substring match,
 a fraction rounded to an ID, a string with a comma taken as a list) or
 failing on 1e400, the edit's models read from a stale snapshot, the savepoint logic, the rollback or the
 deadlock report broken; create_buffer_component with the locking read
@@ -142,7 +142,8 @@ column made a LONGTEXT, as on MariaDB before 10.4.3 -- naming it after
 anyone but an administrator, another investigator's model or noise -- also noise
 committed after the caller's transaction took its snapshot -- and, with
 three sessions, a GMP model whose link another connection commits while
-the call waits for a row lock on it, and noise of a GMP model committed
+the call waits for a row lock on it -- in autocommit, after START
+TRANSACTION and with autocommit off -- and noise of a GMP model committed
 after the caller's snapshot; deletes the
 edit, its models and all their noise (also noise computed from an edit
 of another experiment), and noise recorded against the edit for another

@@ -8,8 +8,8 @@
 # an ORDER BY dropped, a blob hashed or not hashed, the old noise
 # semantics, the "magic" experiment 1; in delete_editedData,
 # create_buffer_component and add_buffer_component a permission, GMP or
-# ownership check dropped, the GMP links read before the row locks (a
-# snapshot taken before the call waited), the GMP rule loosened (2DSA_MC
+# ownership check dropped, the GMP links read without a lock (a
+# caller's snapshot from before the call waited), the GMP rule loosened (2DSA_MC
 # ignored, a substring match, a fraction rounded, a comma-separated string
 # taken as a list) or failing on 1e400, the edit's models read from a
 # stale snapshot, the savepoint logic or the deadlock report broken, the
@@ -78,7 +78,7 @@ del-gmp-fraction-rounded	us3_expdata_procs.sql	s/IF \( l_number = FLOOR\( l_numb
 del-gmp-comma-in-string	us3_expdata_procs.sql	s/SET l_id = REPLACE\( JSON_UNQUOTE\( l_value \), ',', ' ' \);/SET l_id = JSON_UNQUOTE( l_value );/
 del-gmp-huge-number-fails	us3_expdata_procs.sql	s/DECLARE CONTINUE HANDLER FOR 1292, 1264, 1367, 1690, SQLWARNING\n\s+SET l_number = NULL;//
 del-gmp-candidates-snapshot	us3_expdata_procs.sql	s/(WHERE    editedDataID = p_editedDataID)\n        FOR UPDATE;/$1;/g
-del-gmp-links-before-locks	us3_expdata_procs.sql	s/(    SET l_started = 1;\n)/$1    SELECT COUNT(*) INTO l_count_edits FROM autoflowModelsLink;\n/
+del-gmp-links-plain-read	us3_expdata_procs.sql	s/(WHERE  modelsDesc IS NOT NULL)\n\s+LOCK IN SHARE MODE;/$1;/
 del-no-foreign-check	us3_expdata_procs.sql	s/ELSEIF \( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL \) THEN/ELSEIF ( 0 ) THEN/
 del-no-foreign-models	us3_expdata_procs.sql	s/GROUP_CONCAT\( IF\( model_of_other_investigator\( modelID \) = 1, modelID, NULL \)/GROUP_CONCAT( IF( 0, modelID, NULL )/
 del-foreign-for-admin-too	us3_expdata_procs.sql	s/IF \( \@USERLEVEL >= \@US3_ADMIN \) THEN\n    RETURN 0;/IF ( 0 ) THEN\n    RETURN 0;/

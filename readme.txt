@@ -150,19 +150,22 @@ delete_editedData (us3_expdata_procs.sql) now:
     reads only arrays, and so does version 2: a change to note for a
     GMP writer that stores single objects;
   - reads autoflowModelsLink once per call, after it has locked the
-    edit's models and noise (so a GMP link committed while it waited for
-    one of those locks is seen), and looks each model ID a link names up
+    edit's models and noise, with a shared-locking read (so a GMP link
+    committed while it waited for one of those locks is seen, also inside
+    a caller's transaction whose snapshot is older), and looks each model
+    ID a link names up
     in the short list of the models in question.  A call therefore costs
     one pass over that table, linear in its size, and not one pass per
     model and noise record: 0.2 s rather than 25-110 s for an edit with
     1000 models and 1000 noise records against 1000 links, and about
     1.5 s for an edit against 20000 links of 9 models each (the list of
     every GMP model that version 2 first built took 12-16 s there, and
-    could exceed max_allowed_packet).  Under SERIALIZABLE (a caller's
-    transaction at that isolation level) InnoDB turns that plain read
-    into a shared-locking one, so the call then holds shared locks on
-    every row of autoflowModelsLink until the transaction ends, and a
-    GMP writer waits for it;
+    could exceed max_allowed_packet).  The call holds those shared locks
+    on every row of autoflowModelsLink (and, under REPEATABLE READ, on
+    the gaps between them) until its transaction ends -- inside a
+    caller's transaction, until the caller commits or rolls back -- and
+    meanwhile a GMP writer that inserts, changes or deletes a link waits
+    for it, failing with error 1205 after innodb_lock_wait_timeout;
   - raises error 1213 (SQLSTATE 40001) instead of answering a status when
     a deadlock inside a caller's transaction made the server roll that
     whole transaction back (and likewise re-raises any other error after

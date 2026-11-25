@@ -1478,16 +1478,18 @@ END$$
 --   savepoint) the deletes run in, so they are checked as they are -- also
 --   inside a caller's REPEATABLE READ transaction whose snapshot is older
 --   -- and noise another connection records against the edit meanwhile
---   waits for the call to end.  autoflowModelsLink is read without
---   locking (a locking read would lock the whole table), after those row
---   locks are taken, so a GMP link committed while the call waited for
---   one is seen; inside a caller's transaction a GMP link committed after
---   its snapshot was taken is not.  Under SERIALIZABLE (a caller's
---   transaction at that isolation level) InnoDB makes that plain read a
---   shared-locking one: the call then holds shared locks on every row of
---   autoflowModelsLink until the transaction ends, and GMP writers wait.  On a refusal inside a caller's transaction the locks stay until
---   that transaction ends (InnoDB keeps row locks across ROLLBACK TO
---   SAVEPOINT).
+--   waits for the call to end.  autoflowModelsLink is read after those
+--   row locks are taken, with a shared-locking read (LOCK IN SHARE MODE),
+--   which sees the links as they are: a GMP link committed while the call
+--   waited for one of the locks is seen, also inside a caller's
+--   transaction whose snapshot is older than that link.  The read locks
+--   every row of autoflowModelsLink, and under REPEATABLE READ the gaps
+--   between them, until the transaction ends -- the call's own, or the
+--   caller's: meanwhile a connection that inserts, changes or deletes a
+--   GMP link waits (and fails with error 1205 after
+--   innodb_lock_wait_timeout, 50 s by default).  On a refusal inside a
+--   caller's transaction the locks stay until that transaction ends
+--   (InnoDB keeps row locks across ROLLBACK TO SAVEPOINT).
 --
 -- All or nothing
 --   The deletes run in a transaction of their own when the caller is not
@@ -1745,12 +1747,14 @@ BEGIN
 
     -- Which of them GMP refers to (the policy above the procedure), into
     -- l_gmp_ids, ",id,id,...,".  autoflowModelsLink is read only now that
-    -- the rows are locked, so a link committed while this call waited for
-    -- a lock is seen (this first plain read takes the transaction's
-    -- snapshot, unless the caller's transaction has one already).  Every
-    -- row once, without locking (a locking read would lock the whole
-    -- table); each ID a row names is looked up in the short candidate
-    -- list, so the call costs one pass over the table, and its time grows
+    -- the rows are locked, and with a locking read, so that a link
+    -- committed while this call waited for a lock is seen: inside a
+    -- caller's transaction a plain read would see the snapshot that the
+    -- plain reads at the start of the call took.  The shared locks hold
+    -- every row of the table, and under REPEATABLE READ its gaps, until
+    -- the transaction ends; GMP writers wait meanwhile.  Every row once;
+    -- each ID a row names is looked up in the short candidate list, so
+    -- the call costs one pass over the table, and its time grows
     -- linearly with the number of links.  Only JSON_VALID, JSON_EXTRACT,
     -- JSON_LENGTH and JSON_UNQUOTE (MySQL 5.7.8, MariaDB 10.2.3; us3.sql's
     -- JSON column needs MariaDB 10.2.7), not JSON_TABLE (MySQL 8.0.4,
@@ -1773,7 +1777,8 @@ BEGIN
       DECLARE c_links CURSOR FOR
         SELECT modelsDesc
         FROM   autoflowModelsLink
-        WHERE  modelsDesc IS NOT NULL;
+        WHERE  modelsDesc IS NOT NULL
+        LOCK IN SHARE MODE;
 
       DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
 
