@@ -118,7 +118,7 @@
 -- and every other connection logging in as the same investigator (a
 -- second program browsing the same data, say) waits in check_user() until
 -- the import commits, or fails after innodb_lock_wait_timeout (50 s by
--- default) with error 1205.  See readme.txt for ways around it.
+-- default) with error 1205.  See readme.txt for what a client can do.
 --
 
 DELIMITER $$

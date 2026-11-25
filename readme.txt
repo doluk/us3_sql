@@ -69,47 +69,25 @@ commits or rolls back.  Meanwhile every other connection logging in as the
 same investigator waits in check_user(): a second program browsing the
 same data stalls, and fails with error 1205 (lock wait timeout) after
 innodb_lock_wait_timeout, 50 s by default.  Other investigators are not
-affected.  Reproduced on MySQL 8.0.46 and MariaDB 10.11.
+affected.
 
-check_user() is unchanged for now.  What was tried:
-
-  - Skipping the UPDATE when lastLogin is recent (say within 10 minutes),
-    read with a plain SELECT first.  This removes the stall whenever the
-    client logged in -- outside its transaction -- shortly before opening
-    it, which is what UltraScan3 does when it connects, and the
-    transaction is shorter than that window: inside it, no login writes.
-    Once the window passes during the transaction, the next login inside
-    it writes and locks the row, and other logins wait again.  The cost
-    is that lastLogin becomes accurate only to the window.
-
-  - Skipping the UPDATE when the row is locked (SELECT ... FOR UPDATE SKIP
-    LOCKED first) did not help: MySQL 8.0 ignores SKIP LOCKED inside a
-    stored function, so check_user() still waited there, and on MariaDB
-    10.11 check_user() waited all the same.  SKIP LOCKED is also missing
-    from MariaDB before 10.6 and MySQL before 8.0, where check_user()
-    would no longer load at all.
-
-        -- in check_user(), with lastLogin read into l_lastLogin
-        IF ( l_lastLogin IS NULL OR
-             l_lastLogin < NOW() - INTERVAL 10 MINUTE ) THEN
-          UPDATE people SET lastLogin = NOW() WHERE personID = @US3_ID;
-        END IF;
-
-  - The complete fix is to stop writing on every call: record lastLogin
-    once per session, in a login procedure a client calls when it
-    connects (outside any transaction), and let check_user() only read.
-    That needs every client that relies on lastLogin being kept up to
-    date (the LIMS web pages included) to call it, so it is a change to
-    agree on rather than to make here.
-
-Until then a client should keep transactions short, log in (call any
+A client should therefore keep transactions short, log in (call any
 procedure) just before opening one, and expect error 1205 in other
 programs of the same investigator while a long transaction is open.
 
+Removing the wait needs check_user() to stop writing on every call:
+record lastLogin once per session, in a login procedure a client calls
+when it connects (outside any transaction), and let check_user() only
+read.  Every client that relies on lastLogin (the LIMS web pages
+included) would have to call it, so that is a change to agree on.
+Skipping the UPDATE while the row is locked does not work: MySQL 8.0
+ignores SKIP LOCKED inside a stored function, MariaDB 10.11 waits all
+the same, and older servers lack SKIP LOCKED.
 
-delete_editedData and create_buffer_component (changed behaviour)
 
-delete_editedData (us3_expdata_procs.sql) now:
+delete_editedData (changed behaviour)
+
+delete_editedData (us3_expdata_procs.sql):
 
   - allows an edit to an administrator and to anyone with an
     experimentPerson row for its experiment, also for experiment 1 (it
@@ -132,40 +110,41 @@ delete_editedData (us3_expdata_procs.sql) now:
     (as a string equal to the model's ID, or an equal number), the same
     rule as UltraScan3's us_manage_data; models of other stages (2DSA,
     2DSA_FM, ...) are not protected.  That is policy, not an oversight:
-    change it here and in UltraScan3 together.  A modelsDesc that is not
+    change it here and in UltraScan3 together.  A stage whose value is
+    an object rather than an array ({"PCSA":{"modelID":"9405"}})
+    protects nothing, as UltraScan3 reads only arrays: a GMP writer must
+    store arrays.  A number that a double cannot hold, such as 1e400
+    (valid JSON on MariaDB), names no model.  A modelsDesc that is not
     valid JSON (a table created on MariaDB before 10.4.3 has no CHECK on
     the column) is not skipped, as UltraScan3 skips it, but protects the
     ID written after each "modelID" in its text, under any key: a
     deletion cannot be undone, and such a row still names GMP models.
-    It no longer makes the call fail (it made JSON_CONTAINS raise error
-    4038 on MariaDB, which stopped every edit deletion).  Two limits of
-    that text rule: the ID must be written as it is (a leading zero, as
-    in "modelID":"09405", names no model), and it must start within 8
-    characters after "modelID" (wider separators are not read).  Nor
-    does a number that a double cannot hold, such as 1e400 (valid JSON
-    on MariaDB), make the call fail any more (error 1292); it names no
-    model.  A stage whose value is an object rather than an array
-    ({"PCSA":{"modelID":"9405"}}) protects nothing.  Version 1 of these
-    procedures (JSON_CONTAINS on the stage) protected it, but UltraScan3
-    reads only arrays, and so does version 2: a change to note for a
-    GMP writer that stores single objects;
+    Two limits of that text rule: the ID must be written as it is (a
+    leading zero, as in "modelID":"09405", names no model), and it must
+    start within 8 characters after "modelID" (wider separators are not
+    read);
   - reads autoflowModelsLink once per call, after it has locked the
-    edit's models and noise, with a shared-locking read (so a GMP link
-    committed while it waited for one of those locks is seen, also inside
-    a caller's transaction whose snapshot is older), and looks each model
-    ID a link names up
-    in the short list of the models in question.  A call therefore costs
-    one pass over that table, linear in its size: about 0.3 s for an
-    edit with 1000 models and 1000 noise records against 1000 links, and
-    0.5-0.7 s for an edit with a few models against 20000 links of 9
-    models each (it looks at the IDs of a link one by one only when its
-    text may hold one of the edit's model IDs).  For an edit with no
-    models and no noise it does not read the table at all.  The call holds those shared locks
-    on every row of autoflowModelsLink (and, under REPEATABLE READ, on
-    the gaps between them) until its transaction ends -- inside a
-    caller's transaction, until the caller commits or rolls back -- and
-    meanwhile a GMP writer that inserts, changes or deletes a link waits
-    for it, failing with error 1205 after innodb_lock_wait_timeout;
+    edit's models and noise, with a shared-locking read, so that a GMP
+    link committed while it waited for one of those locks is seen, also
+    inside a caller's transaction whose snapshot is older.  It looks
+    each model ID a link names up in the short list of the models in
+    question, so a call costs one pass over that table, linear in its
+    size: about 0.3 s for an edit with 1000 models and 1000 noise
+    records against 1000 links, and 0.5-0.7 s for an edit with a few
+    models against 20000 links of 9 models each (it takes a link's IDs
+    one by one only when their text may hold one of the edit's model
+    IDs).  For an edit with no models and no noise it does not read the
+    table at all;
+  - holds, until its transaction ends -- inside a caller's transaction,
+    until the caller commits or rolls back -- shared locks on every row
+    of autoflowModelsLink and, under REPEATABLE READ, on the gaps
+    between them, so that meanwhile a GMP writer that inserts, changes
+    or deletes a link waits for it (and fails with error 1205 after
+    innodb_lock_wait_timeout).  Under REPEATABLE READ it also locks the
+    gaps next to the edit's entries in the editedDataID indexes of model
+    and noise: a model or noise record inserted meanwhile for an edit
+    whose ID falls in such a gap waits too -- when the edit has the
+    highest ID that has models, a new fit of any newer edit;
   - deletes only the models and noise records it checked: under READ
     COMMITTED, which takes no gap locks, one that another connection
     commits against the edit after the checks stays, the edit's own
@@ -174,7 +153,11 @@ delete_editedData (us3_expdata_procs.sql) now:
   - raises error 1213 (SQLSTATE 40001) instead of answering a status when
     a deadlock inside a caller's transaction made the server roll that
     whole transaction back (and likewise re-raises any other error after
-    which its savepoint is gone);
+    which its savepoint is gone).  It locks an edit's models before
+    their noise, while delete_model, and UltraScan3 when it removes a
+    model (delete_noise, then delete_model), take the noise first: the
+    two can deadlock on the same records, and the server then rolls one
+    of them back (1213); either may be repeated;
   - uses the savepoint name us3_delete_editedData_sp.
 
 As before, an administrator's call deletes, with the edit, the models
@@ -182,6 +165,9 @@ other investigators fitted to it and their noise, and anyone's call
 deletes all noise fitted with the edit's models that it may delete, also
 noise computed from another investigator's edit in another experiment
 (a global fit).  The procedure's header lists exactly what goes.
+
+
+verify_model_permission (changed behaviour)
 
 verify_model_permission (us3_model_procs.sql), which update_model,
 get_model_info, delete_model, new_noise and update_noise use, matches the
@@ -192,22 +178,25 @@ unless something had logged in first, as UltraScan3 does when it
 connects, and after another person's login on the same connection the
 caller was let in to that person's models.
 
-create_buffer_component (us3_buffer_procs.sql) no longer reads the
-highest ID with a locking read, which inside a caller's transaction held
-a gap lock until it ended and deadlocked other connections creating
-components.  It reads it without locking, and when the ID is taken tries
-the next one, up to 100 times, before answering @INSERTDUP (402).  A
-connection whose ID another transaction has inserted but not committed
-waits for that transaction, as for any duplicate key.  So while a long
-transaction that created a component is open -- UltraScan3's data import
-holds one for the whole import -- every other connection creating a
-component waits until it commits or rolls back, and fails with error
-1205 after innodb_lock_wait_timeout (50 s by default).  There is no
-deadlock, and the IDs stay distinct.  Only giving bufferComponentID an
-AUTO_INCREMENT would remove that wait (AUTO_INCREMENT values are not
-held to the end of the transaction); that is a schema change, left for
-now.  The header of each procedure has the details;
-tests/write_procs_test.sh checks them.
+
+create_buffer_component (changed behaviour)
+
+create_buffer_component (us3_buffer_procs.sql) reads the highest ID
+without a locking read (a locking read inside a caller's transaction
+held a gap lock until it ended and deadlocked other connections creating
+components), and when the ID is taken tries the next one, up to 100
+times, before answering @INSERTDUP (402).  It reports the ID it inserted
+through last_insertID().  A connection whose ID another transaction has
+inserted but not committed waits for that transaction, as for any
+duplicate key.  So while a long transaction that created a component is
+open -- UltraScan3's data import holds one for the whole import -- every
+other connection creating a component waits until it commits or rolls
+back, and fails with error 1205 after innodb_lock_wait_timeout (50 s by
+default).  There is no deadlock, and the IDs stay distinct.  Only giving
+bufferComponentID an AUTO_INCREMENT would remove that wait
+(AUTO_INCREMENT values are not held to the end of the transaction); that
+is a schema change, left for now.  The header of each procedure has the
+details; tests/write_procs_test.sh checks them.
 
 
 Telling an updated database from an old one (us3_catalog_version)
@@ -217,15 +206,13 @@ answers the version of the procedures loaded:
 
   0  (no such function) procedures from before these changes;
   1  the catalog procedures, and create_buffer_component,
-     delete_editedData and the autoflow inserts as described above;
-  2  as 1, plus two new procedures (below); delete_editedData reads
-     autoflowModelsLink once per call and copes with a row that is not
-     valid JSON (above).  No parameter list changed.  Later fixes that
-     keep the number at 2: delete_editedData reads the links only after
-     taking its row locks, in time linear in their number, and the helper
-     procedure autoflow_model_ids, which listed the GMP model IDs to any
-     caller without a login, is gone (nothing outside delete_editedData
-     called it).
+     delete_editedData and the autoflow inserts that report the key they
+     inserted;
+  2  as 1, plus clear_experiment_fields and set_rotor_calibration_date
+     (below), and delete_editedData and verify_model_permission as
+     described above.  No procedure that existed before version 1
+     changed its parameter list; the new set_rotor_calibration_date
+     takes its date as a string (TEXT), not a DATETIME.
 
 A client asks with "SELECT us3_catalog_version()" and takes error 1305
 (the function does not exist) or 1370 (no EXECUTE privilege on it) as 0.
@@ -271,7 +258,8 @@ JSON_UNQUOTE, which came with MySQL 5.7.8 and MariaDB 10.2.3, and us3.sql
 declares autoflowModelsLink.modelsDesc as JSON, a type MariaDB has from
 10.2.7 (an alias for LONGTEXT; a CHECK ( JSON_VALID(...) ) since 10.4.3).
 Nothing needs JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).  The tests run on
-MySQL 8.0.46 and MariaDB 10.11 (tests/README).
+MySQL 8.0.46 and MariaDB 10.11 (tests/README); the write test also on
+MySQL 8.0 with lower_case_table_names = 1.
 
 
 Upstream
@@ -286,8 +274,7 @@ them, or us3_procedures.sql sources a file that is not there.
 
 New in version 2: clear_experiment_fields, set_rotor_calibration_date
 
-No existing procedure's parameters changed (the LIMS calls them).  Two
-procedures were added for clients that copy records from elsewhere --
+Two procedures for clients that copy records from elsewhere --
 UltraScan3's data import -- and must keep what update_experiment and
 add_rotor_calibration cannot store:
 
@@ -313,11 +300,12 @@ add_rotor_calibration cannot store:
     call.  Administrators only, as add_rotor_calibration.  Status 0, the
     login's codes, 201, 519 (no such calibration), or -1, changing
     nothing, for a string of another form (an offset, fractions of a
-    second, a trailing newline) or a date that does not exist, a time outside the TIMESTAMP
-    range (in a time zone east of UTC, 1970-01-01 00:00:00 is before
-    it), or NULL where the column is declared NOT NULL (us3.sql declares
-    it TIMESTAMP NULL; a TIMESTAMP declared without NULL would store the
-    time of the call under MySQL 5.7's defaults, or refuse).
+    second, a trailing newline) or a date that does not exist, a time
+    outside the TIMESTAMP range (in a time zone east of UTC, 1970-01-01
+    00:00:00 is before it), or NULL where the column is declared NOT
+    NULL (us3.sql declares it TIMESTAMP NULL; a TIMESTAMP declared
+    without NULL would store the time of the call under MySQL 5.7's
+    defaults, or refuse).
 
 A client calls them, inside its transaction, only when
 us3_catalog_version() is 2 or more; otherwise it keeps the old behaviour
