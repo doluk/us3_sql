@@ -1370,130 +1370,40 @@ BEGIN
 
 END$$
 
--- The model IDs the GMP framework refers to, read once per call, as one
--- list ",id,id,...," in p_ids (LOCATE( CONCAT( ',', modelID, ',' ),
--- p_ids ) > 0 tests a model).  This is the GMP protection policy:
+-- The GMP protection policy of delete_editedData (below), which reads
+-- autoflowModelsLink itself.  A model is a GMP model when
 --
---   - a valid modelsDesc of autoflowModelsLink protects the modelID
---     members of the objects in the arrays under the keys 2DSA_IT, 2DSA_MC
---     and PCSA, and nothing else -- the keys and the shape UltraScan3 reads
+--   - a valid modelsDesc of autoflowModelsLink lists it as a modelID
+--     member of an object in the arrays under the keys 2DSA_IT, 2DSA_MC
+--     and PCSA -- the keys and the shape UltraScan3 reads
 --     (US_DataTree::parse_models_desc_json in us_manage_data; the LIMS
 --     writes the same).  Models of the other stages (2DSA, 2DSA_FM, ...)
---     are not protected, as in UltraScan3.  A modelID may be a string,
---     which must be the model's ID exactly ("9405", not " 9405" or
---     "09405"), or a number equal to it (9405 or 9405.0);
+--     are not protected, as in UltraScan3, and neither is a modelID in a
+--     stage whose value is an object rather than an array (UltraScan3
+--     reads only arrays).  A modelID may be a string, which must be the
+--     model's ID exactly ("9405", not " 9405", "09405" or "9405,9406"),
+--     or a number equal to it (9405 or 9405.0, not 9404.6); a number a
+--     double cannot hold (1e400, which MariaDB's JSON accepts) names no
+--     model;
 --   - a modelsDesc that is not valid JSON (possible in a table created on
 --     MariaDB before 10.4.3, whose JSON columns had no CHECK yet, or in a
 --     column changed to TEXT) cannot be read by key.  UltraScan3 ignores
 --     such a row, but it still names GMP models, and a deletion cannot be
---     undone, so here it protects, under any key, the run of digits that
+--     undone, so here it names, under any key, the run of digits that
 --     starts within 8 characters after each "modelID" in its text (the
 --     ID of {"modelID":"9405" and of "modelID": 9405, also in a
---     truncated text).  Such a row no longer makes the JSON functions
---     fail: it used to stop every edit deletion on MariaDB (error 4038).
+--     truncated text) -- written as the model's ID exactly: a run with a
+--     leading zero ("09405") names no model, nor does one that starts 8
+--     or more characters further on.  Such a row does not make the JSON
+--     functions fail: it used to stop every edit deletion on MariaDB
+--     (error 4038).
 --   - NULL is no reference.
 --
--- It reads every row once, without locking (a locking read would lock the
--- whole table), so a call costs one pass over the table plus one string
--- search per model checked, instead of a JSON search of the whole table
--- per model.  It needs only JSON_VALID, JSON_EXTRACT, JSON_LENGTH and
--- JSON_UNQUOTE (MySQL 5.7.8, MariaDB 10.2.3; us3.sql's JSON column needs
--- MariaDB 10.2.7), not JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).
+-- autoflow_model_ids, which gathered every GMP model ID of the table into
+-- one list, is gone: it took time quadratic in the number of links, and
+-- answered anyone, without a login.  model_in_autoflow went before it.
 DROP FUNCTION IF EXISTS model_in_autoflow$$
 DROP PROCEDURE IF EXISTS autoflow_model_ids$$
-CREATE PROCEDURE autoflow_model_ids ( OUT p_ids LONGBLOB )
-  READS SQL DATA
-
-BEGIN
-  DECLARE l_done   TINYINT DEFAULT 0;
-  DECLARE l_desc   LONGTEXT CHARACTER SET utf8mb4;
-  DECLARE l_ids    LONGTEXT CHARACTER SET utf8mb4;
-  DECLARE l_value  LONGTEXT CHARACTER SET utf8mb4;
-  DECLARE l_raw    LONGBLOB;
-  DECLARE l_count  INT;
-  DECLARE l_i      INT;
-  DECLARE l_pos    INT;
-  DECLARE l_start  INT;
-  DECLARE l_end    INT;
-  DECLARE l_length INT;
-  DECLARE l_number DOUBLE;
-
-  DECLARE c_links CURSOR FOR
-    SELECT modelsDesc
-    FROM   autoflowModelsLink
-    WHERE  modelsDesc IS NOT NULL;
-
-  DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
-
-  SET p_ids = ',';
-
-  OPEN c_links;
-
-  links: LOOP
-    FETCH c_links INTO l_desc;
-    IF ( l_done = 1 ) THEN
-      LEAVE links;
-    END IF;
-
-    IF ( JSON_VALID( l_desc ) ) THEN
-      -- An array of the stages' modelID values, NULL when there are none
-      SET l_ids   = JSON_EXTRACT( l_desc, '$."2DSA_IT"[*].modelID',
-                                          '$."2DSA_MC"[*].modelID',
-                                          '$.PCSA[*].modelID' );
-      SET l_count = COALESCE( JSON_LENGTH( l_ids ), 0 );
-      SET l_i     = 0;
-
-      WHILE ( l_i < l_count ) DO
-        SET l_value = JSON_EXTRACT( l_ids, CONCAT( '$[', l_i, ']' ) );
-
-        IF ( LEFT( l_value, 1 ) = '"' ) THEN
-          -- A string: as it is (a comma in it cannot make a list item)
-          SET p_ids = CONCAT( p_ids, REPLACE( JSON_UNQUOTE( l_value ), ',', ' ' ), ',' );
-
-        ELSEIF ( LEFT( l_value, 1 ) IN ( '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' ) ) THEN
-          -- A number: when it is a whole number a model ID can be
-          SET l_number = l_value + 0;
-          IF ( l_number = FLOOR( l_number ) AND ABS( l_number ) < 2147483648 ) THEN
-            SET p_ids = CONCAT( p_ids, CAST( l_number AS SIGNED ), ',' );
-          END IF;
-
-        END IF;
-
-        SET l_i = l_i + 1;
-      END WHILE;
-
-    ELSE
-      -- Not JSON: the digits after each "modelID", bytewise
-      SET l_raw    = CAST( l_desc AS BINARY );
-      SET l_length = LENGTH( l_raw );
-      SET l_pos    = LOCATE( 'modelID', l_raw );
-
-      WHILE ( l_pos > 0 ) DO
-        SET l_start = l_pos + 7;
-        WHILE ( l_start < l_pos + 15 AND l_start <= l_length AND
-                SUBSTRING( l_raw, l_start, 1 ) NOT BETWEEN '0' AND '9' ) DO
-          SET l_start = l_start + 1;
-        END WHILE;
-
-        SET l_end = l_start;
-        WHILE ( l_end <= l_length AND SUBSTRING( l_raw, l_end, 1 ) BETWEEN '0' AND '9' ) DO
-          SET l_end = l_end + 1;
-        END WHILE;
-
-        IF ( l_end > l_start ) THEN
-          SET p_ids = CONCAT( p_ids, SUBSTRING( l_raw, l_start, l_end - l_start ), ',' );
-        END IF;
-
-        SET l_pos = LOCATE( 'modelID', l_raw, l_pos + 7 );
-      END WHILE;
-
-    END IF;
-
-  END LOOP;
-
-  CLOSE c_links;
-
-END$$
 
 -- Is model p_modelID another investigator's, as far as the caller verified
 -- last in this connection is concerned?  1 when the caller is not an
@@ -1555,7 +1465,7 @@ END$$
 --   so a client cannot show, or check, what else an edit removal would
 --   take.  The call is therefore refused, and the message names the
 --   records, when the models or noise it would delete include
---     - a model the GMP framework refers to (autoflow_model_ids():
+--     - a model the GMP framework refers to (the policy above:
 --       autoflowModelsLink lists it under 2DSA_IT, 2DSA_MC or PCSA, or a
 --       row that is not valid JSON names it), or noise fitted with one --
 --       for everybody, administrators included;
@@ -1572,7 +1482,10 @@ END$$
 --   locking (a locking read would lock the whole table), after those row
 --   locks are taken, so a GMP link committed while the call waited for
 --   one is seen; inside a caller's transaction a GMP link committed after
---   its snapshot was taken is not.  On a refusal inside a caller's transaction the locks stay until
+--   its snapshot was taken is not.  Under SERIALIZABLE (a caller's
+--   transaction at that isolation level) InnoDB makes that plain read a
+--   shared-locking one: the call then holds shared locks on every row of
+--   autoflowModelsLink until the transaction ends, and GMP writers wait.  On a refusal inside a caller's transaction the locks stay until
 --   that transaction ends (InnoDB keeps row locks across ROLLBACK TO
 --   SAVEPOINT).
 --
@@ -1639,7 +1552,8 @@ BEGIN
   DECLARE l_other_noise    TEXT    DEFAULT NULL;
   DECLARE l_gmp_noise2     TEXT    DEFAULT NULL;
   DECLARE l_other_noise2   TEXT    DEFAULT NULL;
-  DECLARE l_gmp_ids        LONGBLOB DEFAULT NULL;
+  DECLARE l_candidates     LONGBLOB DEFAULT ',';
+  DECLARE l_gmp_ids        LONGBLOB DEFAULT ',';
 
   DECLARE EXIT HANDLER FOR SQLEXCEPTION
   BEGIN
@@ -1783,12 +1697,172 @@ BEGIN
     AND        n.editedDataID != p_editedDataID
     FOR UPDATE;
 
-    -- The models GMP protects, read once (autoflow_model_ids) and only
-    -- now that the rows are locked: a link committed while this call
-    -- waited for a lock is seen (the transaction's snapshot is taken by
-    -- this first plain read, unless the caller's transaction has one)
-    CALL autoflow_model_ids( l_gmp_ids );
+    -- The models whose GMP links matter, as the list ",id,id,...,": the
+    -- edit's models (the noise fitted with them is theirs) and the models
+    -- the noise recorded against the edit was fitted with.  Locking reads,
+    -- of rows locked above, so that they are the rows as they are.
+    BEGIN
+      DECLARE l_done  TINYINT DEFAULT 0;
+      DECLARE l_model INT;
 
+      DECLARE c_models CURSOR FOR
+        SELECT   modelID
+        FROM     model
+        WHERE    editedDataID = p_editedDataID
+        FOR UPDATE;
+
+      DECLARE c_noise_models CURSOR FOR
+        SELECT   modelID
+        FROM     noise
+        WHERE    editedDataID = p_editedDataID
+        FOR UPDATE;
+
+      DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
+
+      OPEN c_models;
+      models: LOOP
+        FETCH c_models INTO l_model;
+        IF ( l_done = 1 ) THEN
+          LEAVE models;
+        END IF;
+        SET l_candidates = CONCAT( l_candidates, l_model, ',' );
+      END LOOP;
+      CLOSE c_models;
+
+      SET l_done = 0;
+      OPEN c_noise_models;
+      noise_models: LOOP
+        FETCH c_noise_models INTO l_model;
+        IF ( l_done = 1 ) THEN
+          LEAVE noise_models;
+        END IF;
+        IF ( LOCATE( CONCAT( ',', l_model, ',' ), l_candidates ) = 0 ) THEN
+          SET l_candidates = CONCAT( l_candidates, l_model, ',' );
+        END IF;
+      END LOOP;
+      CLOSE c_noise_models;
+    END;
+
+    -- Which of them GMP refers to (the policy above the procedure), into
+    -- l_gmp_ids, ",id,id,...,".  autoflowModelsLink is read only now that
+    -- the rows are locked, so a link committed while this call waited for
+    -- a lock is seen (this first plain read takes the transaction's
+    -- snapshot, unless the caller's transaction has one already).  Every
+    -- row once, without locking (a locking read would lock the whole
+    -- table); each ID a row names is looked up in the short candidate
+    -- list, so the call costs one pass over the table, and its time grows
+    -- linearly with the number of links.  Only JSON_VALID, JSON_EXTRACT,
+    -- JSON_LENGTH and JSON_UNQUOTE (MySQL 5.7.8, MariaDB 10.2.3; us3.sql's
+    -- JSON column needs MariaDB 10.2.7), not JSON_TABLE (MySQL 8.0.4,
+    -- MariaDB 10.6).
+    BEGIN
+      DECLARE l_done   TINYINT DEFAULT 0;
+      DECLARE l_desc   LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_ids    LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_value  LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_id     LONGBLOB;
+      DECLARE l_raw    LONGBLOB;
+      DECLARE l_count  INT;
+      DECLARE l_i      INT;
+      DECLARE l_pos    INT;
+      DECLARE l_start  INT;
+      DECLARE l_end    INT;
+      DECLARE l_length INT;
+      DECLARE l_number DOUBLE;
+
+      DECLARE c_links CURSOR FOR
+        SELECT modelsDesc
+        FROM   autoflowModelsLink
+        WHERE  modelsDesc IS NOT NULL;
+
+      DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
+
+      OPEN c_links;
+
+      links: LOOP
+        FETCH c_links INTO l_desc;
+        IF ( l_done = 1 ) THEN
+          LEAVE links;
+        END IF;
+
+        IF ( JSON_VALID( l_desc ) ) THEN
+          -- An array of the stages' modelID values, NULL when there are none
+          SET l_ids   = JSON_EXTRACT( l_desc, '$."2DSA_IT"[*].modelID',
+                                              '$."2DSA_MC"[*].modelID',
+                                              '$.PCSA[*].modelID' );
+          SET l_count = COALESCE( JSON_LENGTH( l_ids ), 0 );
+          SET l_i     = 0;
+
+          WHILE ( l_i < l_count ) DO
+            SET l_value = JSON_EXTRACT( l_ids, CONCAT( '$[', l_i, ']' ) );
+            SET l_id    = NULL;
+
+            IF ( LEFT( l_value, 1 ) = '"' ) THEN
+              -- A string: as it is (with a comma in it, it is no list item)
+              SET l_id = REPLACE( JSON_UNQUOTE( l_value ), ',', ' ' );
+
+            ELSEIF ( LEFT( l_value, 1 ) IN ( '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' ) ) THEN
+              -- A number: when it is a whole number a model ID can be.  One
+              -- a double cannot hold (MariaDB's JSON accepts 1e400) is
+              -- none, and must not fail the call (error 1292)
+              SET l_number = NULL;
+              BEGIN
+                DECLARE CONTINUE HANDLER FOR 1292, 1264, 1367, 1690, SQLWARNING
+                  SET l_number = NULL;
+                SET l_number = l_value + 0;
+              END;
+              IF ( l_number = FLOOR( l_number ) AND ABS( l_number ) < 2147483648 ) THEN
+                SET l_id = CAST( l_number AS SIGNED );
+              END IF;
+
+            END IF;
+
+            IF ( LOCATE( CONCAT( ',', l_id, ',' ), l_candidates ) > 0 AND
+                 LOCATE( CONCAT( ',', l_id, ',' ), l_gmp_ids ) = 0 ) THEN
+              SET l_gmp_ids = CONCAT( l_gmp_ids, l_id, ',' );
+            END IF;
+
+            SET l_i = l_i + 1;
+          END WHILE;
+
+        ELSE
+          -- Not JSON: the digits after each "modelID", bytewise
+          SET l_raw    = CAST( l_desc AS BINARY );
+          SET l_length = LENGTH( l_raw );
+          SET l_pos    = LOCATE( 'modelID', l_raw );
+
+          WHILE ( l_pos > 0 ) DO
+            SET l_start = l_pos + 7;
+            WHILE ( l_start < l_pos + 15 AND l_start <= l_length AND
+                    SUBSTRING( l_raw, l_start, 1 ) NOT BETWEEN '0' AND '9' ) DO
+              SET l_start = l_start + 1;
+            END WHILE;
+
+            SET l_end = l_start;
+            WHILE ( l_end <= l_length AND SUBSTRING( l_raw, l_end, 1 ) BETWEEN '0' AND '9' ) DO
+              SET l_end = l_end + 1;
+            END WHILE;
+
+            IF ( l_end > l_start ) THEN
+              SET l_id = SUBSTRING( l_raw, l_start, l_end - l_start );
+              IF ( LOCATE( CONCAT( ',', l_id, ',' ), l_candidates ) > 0 AND
+                   LOCATE( CONCAT( ',', l_id, ',' ), l_gmp_ids ) = 0 ) THEN
+                SET l_gmp_ids = CONCAT( l_gmp_ids, l_id, ',' );
+              END IF;
+            END IF;
+
+            SET l_pos = LOCATE( 'modelID', l_raw, l_pos + 7 );
+          END WHILE;
+
+        END IF;
+
+      END LOOP;
+
+      CLOSE c_links;
+    END;
+
+    -- The edit's records that go with a GMP model (l_gmp_ids holds only
+    -- candidates, so this is short)
     SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, modelID, NULL )
                              ORDER BY modelID )
     INTO       l_gmp_models

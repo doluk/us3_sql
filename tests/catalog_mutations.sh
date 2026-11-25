@@ -9,8 +9,10 @@
 # semantics, the "magic" experiment 1; in delete_editedData,
 # create_buffer_component and add_buffer_component a permission, GMP or
 # ownership check dropped, the GMP links read before the row locks (a
-# snapshot taken before the call waited), the savepoint logic or the
-# deadlock report broken, the locking read of the highest component ID back, the retries
+# snapshot taken before the call waited), the GMP rule loosened (2DSA_MC
+# ignored, a substring match, a fraction rounded, a comma-separated string
+# taken as a list) or failing on 1e400, the edit's models read from a
+# stale snapshot, the savepoint logic or the deadlock report broken, the locking read of the highest component ID back, the retries
 # gone, a stale ID reported; in the autoflow procedures that insert a row
 # with the caller's key, a stale ID reported, or one for a record that was
 # not copied; in clear_experiment_fields and set_rotor_calibration_date a
@@ -68,7 +70,12 @@ del-gmp-no-pcsa	us3_expdata_procs.sql	s/'\$\.PCSA\[\*\]\.modelID'/'\$.PCSA_[*].m
 del-gmp-any-key	us3_expdata_procs.sql	s/JSON_EXTRACT\( l_desc, '\$\."2DSA_IT"\[\*\]\.modelID',\s+'\$\."2DSA_MC"\[\*\]\.modelID',\s+'\$\.PCSA\[\*\]\.modelID' \)/JSON_EXTRACT( l_desc, '\$.*[*].modelID' )/
 del-gmp-no-json-valid	us3_expdata_procs.sql	s/IF \( JSON_VALID\( l_desc \) \) THEN/IF ( 1 ) THEN/
 del-gmp-invalid-ignored	us3_expdata_procs.sql	s/SET l_pos    = LOCATE\( 'modelID', l_raw \);/SET l_pos    = 0;/
-del-gmp-substring	us3_expdata_procs.sql	s/LOCATE\( CONCAT\( ',', (n\.)?modelID, ',' \), l_gmp_ids \)/LOCATE( $1modelID, l_gmp_ids )/g
+del-gmp-substring	us3_expdata_procs.sql	s/LOCATE\( CONCAT\( ',', (l_id|(?:n\.)?modelID), ',' \), (l_candidates|l_gmp_ids) \) > 0/LOCATE( $1, $2 ) > 0/g
+del-gmp-no-2dsa-mc	us3_expdata_procs.sql	s/\s+'\$\."2DSA_MC"\[\*\]\.modelID',//
+del-gmp-fraction-rounded	us3_expdata_procs.sql	s/IF \( l_number = FLOOR\( l_number \) AND /IF ( 1 AND /
+del-gmp-comma-in-string	us3_expdata_procs.sql	s/SET l_id = REPLACE\( JSON_UNQUOTE\( l_value \), ',', ' ' \);/SET l_id = JSON_UNQUOTE( l_value );/
+del-gmp-huge-number-fails	us3_expdata_procs.sql	s/DECLARE CONTINUE HANDLER FOR 1292, 1264, 1367, 1690, SQLWARNING\n\s+SET l_number = NULL;//
+del-gmp-candidates-snapshot	us3_expdata_procs.sql	s/(WHERE    editedDataID = p_editedDataID)\n        FOR UPDATE;/$1;/g
 del-gmp-links-before-locks	us3_expdata_procs.sql	s/(    SET l_started = 1;\n)/$1    SELECT COUNT(*) INTO l_count_edits FROM autoflowModelsLink;\n/
 del-no-foreign-check	us3_expdata_procs.sql	s/ELSEIF \( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL \) THEN/ELSEIF ( 0 ) THEN/
 del-no-foreign-models	us3_expdata_procs.sql	s/GROUP_CONCAT\( IF\( model_of_other_investigator\( modelID \) = 1, modelID, NULL \)/GROUP_CONCAT( IF( 0, modelID, NULL )/

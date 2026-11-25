@@ -138,11 +138,31 @@ delete_editedData (us3_expdata_procs.sql) now:
     ID written after each "modelID" in its text, under any key: a
     deletion cannot be undone, and such a row still names GMP models.
     It no longer makes the call fail (it made JSON_CONTAINS raise error
-    4038 on MariaDB, which stopped every edit deletion);
-  - reads autoflowModelsLink once per call (autoflow_model_ids), so a
-    call costs one pass over that table, not one per model and noise
-    record: 0.2 s rather than 25-110 s for an edit with 1000 models and
-    1000 noise records against 1000 links;
+    4038 on MariaDB, which stopped every edit deletion).  Two limits of
+    that text rule: the ID must be written as it is (a leading zero, as
+    in "modelID":"09405", names no model), and it must start within 8
+    characters after "modelID" (wider separators are not read).  Nor
+    does a number that a double cannot hold, such as 1e400 (valid JSON
+    on MariaDB), make the call fail any more (error 1292); it names no
+    model.  A stage whose value is an object rather than an array
+    ({"PCSA":{"modelID":"9405"}}) protects nothing.  Version 1 of these
+    procedures (JSON_CONTAINS on the stage) protected it, but UltraScan3
+    reads only arrays, and so does version 2: a change to note for a
+    GMP writer that stores single objects;
+  - reads autoflowModelsLink once per call, after it has locked the
+    edit's models and noise (so a GMP link committed while it waited for
+    one of those locks is seen), and looks each model ID a link names up
+    in the short list of the models in question.  A call therefore costs
+    one pass over that table, linear in its size, and not one pass per
+    model and noise record: 0.2 s rather than 25-110 s for an edit with
+    1000 models and 1000 noise records against 1000 links, and about
+    1.5 s for an edit against 20000 links of 9 models each (the list of
+    every GMP model that version 2 first built took 12-16 s there, and
+    could exceed max_allowed_packet).  Under SERIALIZABLE (a caller's
+    transaction at that isolation level) InnoDB turns that plain read
+    into a shared-locking one, so the call then holds shared locks on
+    every row of autoflowModelsLink until the transaction ends, and a
+    GMP writer waits for it;
   - raises error 1213 (SQLSTATE 40001) instead of answering a status when
     a deadlock inside a caller's transaction made the server roll that
     whole transaction back (and likewise re-raises any other error after
@@ -183,7 +203,12 @@ answers the version of the procedures loaded:
      delete_editedData and the autoflow inserts as described above;
   2  as 1, plus two new procedures (below); delete_editedData reads
      autoflowModelsLink once per call and copes with a row that is not
-     valid JSON (above).  No parameter list changed.
+     valid JSON (above).  No parameter list changed.  Later fixes that
+     keep the number at 2: delete_editedData reads the links only after
+     taking its row locks, in time linear in their number, and the helper
+     procedure autoflow_model_ids, which listed the GMP model IDs to any
+     caller without a login, is gone (nothing outside delete_editedData
+     called it).
 
 A client asks with "SELECT us3_catalog_version()" and takes error 1305
 (the function does not exist) or 1370 (no EXECUTE privilege on it) as 0.

@@ -688,7 +688,7 @@ DELIMITER $$
 --      an experiment's centrifugeProtocol and/or RIProfile to NULL, and
 --      set_rotor_calibration_date (us3_hardware_procs.sql), which sets a
 --      rotor calibration's dateUpdated; delete_editedData reads
---      autoflowModelsLink once per call (autoflow_model_ids) and no
+--      autoflowModelsLink once per call, after its row locks, and no
 --      longer fails on a modelsDesc that is not valid JSON.  No parameter
 --      list changed.
 --

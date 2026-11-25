@@ -106,7 +106,9 @@ refusal, the GMP or ownership checks dropped or loosened (numbers, PCSA
 or the key ignored, a substring match, no JSON_VALID guard, rows that are
 not JSON ignored), those checks
 reading a stale snapshot, the GMP links read (a snapshot taken) before
-the row locks, the savepoint logic, the rollback or the
+the row locks, the GMP rule loosened (2DSA_MC ignored, a substring match,
+a fraction rounded to an ID, a string with a comma taken as a list) or
+failing on 1e400, the edit's models read from a stale snapshot, the savepoint logic, the rollback or the
 deadlock report broken; create_buffer_component with the locking read
 back, no or unbounded retries, the same ID retried, the old row-count ID,
 a duplicate reported as success or a stale ID; add_buffer_component
@@ -138,7 +140,8 @@ column made a LONGTEXT, as on MariaDB before 10.4.3 -- naming it after
 anyone but an administrator, another investigator's model or noise -- also noise
 committed after the caller's transaction took its snapshot -- and, with
 three sessions, a GMP model whose link another connection commits while
-the call waits for a row lock on it; deletes the
+the call waits for a row lock on it, and noise of a GMP model committed
+after the caller's snapshot; deletes the
 edit, its models and all their noise (also noise computed from an edit
 of another experiment), and noise recorded against the edit for another
 edit's model; is all or nothing when the edit cannot be
@@ -150,7 +153,21 @@ caller's transaction as error 1213.  With 1000 models and 1000
 noise records on an edit and 1000 autoflowModelsLink rows naming 9
 models each, a call that deletes and one that is refused each take at
 most WRITE_PERF_LIMIT seconds (default 5; the procedures in the readme's
-version 1 took 25-110 s, these 0.2 s).
+version 1 took 25-110 s, these 0.2 s); so do they for an edit with one
+model against 20000 links naming 9 models each (12-16 s while the
+procedure built a list of every GMP model ID; now about 1.5 s).  A GMP
+link that comes after more link text than max_allowed_packet (links
+with 1 MB modelID strings) still protects its model; that check writes
+as many MB as the packet size, so it runs only when that is at most
+WRITE_PACKET_LIMIT MB (default 20, MariaDB's default packet size) and
+says so when it is skipped (MySQL 8's default is 64 MB).  The GMP rule
+is checked at its edges: 2DSA_MC, a stage that is an object rather than
+an array (not protected), IDs that contain the model's ID or that it
+contains, a number that is not whole (9403.6, not 9404), a string that
+lists two of the edit's model IDs, and a number that a double cannot
+hold (1e400, valid JSON on MariaDB), which names no model and must not
+make the call fail; and a protected model 20500 must not take model
+2050 of the same edit along into the refusal.
 
 create_buffer_component: takes a free ID when the table has a gap, and
 reports that ID through last_insertID() rather than the connection's

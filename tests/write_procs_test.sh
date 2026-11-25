@@ -27,8 +27,16 @@
 #       transaction;
 #     - a deadlock inside a caller's transaction is raised as error 1213,
 #       not answered with a status (two sessions);
-#     - 1000 models and noise records against 1000 GMP links: within
-#       WRITE_PERF_LIMIT seconds (default 5).
+#     - 1000 models and noise records against 1000 GMP links, and one
+#       model against 20000 links of 9 models each: within
+#       WRITE_PERF_LIMIT seconds (default 5);
+#     - a GMP link after more link text than max_allowed_packet still
+#       protects its model (only when the packet is at most
+#       WRITE_PACKET_LIMIT MB, default 20, as the check writes that much);
+#     - the GMP rule's edges: 2DSA_MC, a stage that is an object, IDs that
+#       contain the model's ID or that it contains, a number that is not
+#       whole, a string listing two IDs, and a number a double cannot
+#       hold (1e400, valid JSON on MariaDB), which must not fail the call.
 #
 #   create_buffer_component (us3_buffer_procs.sql)
 #     - takes a free ID when the table has a gap, and reports that ID (not
@@ -312,10 +320,21 @@ check "GMP model of the edit: an administrator may not delete 9303" \
       "201 201 $GMP (models 9404; noise of such models 9503)" \
       "$( del "$ADMIN" 9303 250 )"
 
-# The same ID under a key UltraScan3 does not read, or another ID, is no
-# GMP link
+# ... and under 2DSA_MC
 q "UPDATE autoflowModelsLink
-   SET    modelsDesc = '{\"2DSA\":[{\"modelID\":\"9404\"}],\"PCSA\":[{\"modelID\":\"94040\"}]}'
+   SET    modelsDesc = '{\"2DSA_MC\":[{\"modelID\":\"9404\"}]}'
+   WHERE  autoflowAnalysisID = 9701" > /dev/null
+check "GMP model under 2DSA_MC: an administrator may not delete 9303" \
+      "201 201 $GMP (models 9404; noise of such models 9503)" \
+      "$( del "$ADMIN" 9303 250 )"
+
+# The same ID under a key UltraScan3 does not read, or in a stage that is
+# an object rather than an array, or another ID -- one that contains it
+# (94040), one it contains (404), a number that is not whole and would
+# round to it (9403.6), a string that lists it and another of the edit's
+# models (9405) -- is no GMP link (checked by the deletion further down)
+q "UPDATE autoflowModelsLink
+   SET    modelsDesc = '{\"2DSA\":[{\"modelID\":\"9404\"}],\"2DSA_IT\":{\"modelID\":\"9404\"},\"PCSA\":[{\"modelID\":\"94040\"},{\"modelID\":\"404\"},{\"modelID\":9403.6},{\"modelID\":\"9404,9405\"}]}'
    WHERE  autoflowAnalysisID = 9701" > /dev/null
 check "after the refusals nothing changed" "$FULL" "$( q "$STATE" )"
 
@@ -334,11 +353,16 @@ check "GMP, a row that is not JSON names model 9404: 9303 is refused" \
       "201 201 $GMP (models 9404; noise of such models 9503)" \
       "$( del "$BOB" 9303 250 )"
 
-# The digits after "modelID", not those that merely contain the ID, nor a
-# GUID's; such a row does not stop a deletion (rolled back again)
+# The digits after "modelID", not those that merely contain the ID (or
+# that it contains), nor a GUID's; such a row does not stop a deletion
+# (rolled back again).  Nor does a number a double cannot hold: valid JSON
+# on MariaDB (not on MySQL, whose JSON_VALID refuses it), it made every
+# deletion there fail with error 1292.
 q "UPDATE autoflowModelsLink
-   SET    modelsDesc = '{\"PCSA\":[{\"modelID\":\"94040\",\"modelGUID\":\"00000000-0000-4000-8000-000000009404\"}'
-   WHERE  autoflowAnalysisID = 9702" > /dev/null
+   SET    modelsDesc = '{\"PCSA\":[{\"modelID\":\"94040\",\"modelGUID\":\"00000000-0000-4000-8000-000000009404\"},{\"modelID\":\"940\"}'
+   WHERE  autoflowAnalysisID = 9702;
+   INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     VALUES ( 9704, '{\"PCSA\":[{\"modelID\":1e400},{\"modelID\":-1e400}]}', 9801 )" > /dev/null
 check "a row that is not JSON and names other models: bob may delete 9303" \
       "0 | 1,9301,9302,9304,9305" \
       "$( echo $( q "START TRANSACTION;
@@ -374,6 +398,38 @@ close_session S
 q "DELETE FROM noise WHERE noiseID = 9510;
    DELETE FROM modelPerson WHERE modelID = 9408;
    DELETE FROM model WHERE modelID = 9408;" > /dev/null
+check "... and nothing changed" "$FULL" "$( q "$STATE" )"
+
+# The same for GMP: a link names model 9408 before the caller's snapshot
+# is taken, the model and its noise 9510 against 9303 come after it.  The
+# models whose links matter must be read as they are, too, or an
+# administrator's call deletes that noise.
+q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     VALUES ( 9705, '{\"PCSA\":[{\"modelID\":\"9408\"}]}', 9801 )" > /dev/null
+open_session S
+send S "START TRANSACTION WITH CONSISTENT SNAPSHOT;
+        SELECT COUNT(*) FROM noise;"
+await S s1 || echo "FAIL: snapshot session hangs"
+q "INSERT INTO model ( modelID, editedDataID, modelGUID, description, xml )
+     VALUES ( 9408, 9304, '00000000-0000-4000-8000-000000009408', 'carol.model', '<model/>' );
+   INSERT INTO modelPerson ( modelID, personID ) VALUES ( 9408, 904 );
+   INSERT INTO noise ( noiseID, noiseGUID, editedDataID, modelID, modelGUID,
+                       noiseType, description, xml )
+     VALUES ( 9510, '00000000-0000-4000-8000-000000009510', 9303, 9408,
+              '00000000-0000-4000-8000-000000009408', 'ti_noise', 'carol.noise', '<noise/>' );" > /dev/null
+send S "CALL delete_editedData( $ADMIN, 9303 );
+        SELECT LEFT( last_error(), 250 );
+        ROLLBACK;
+        SELECT COUNT(*) FROM noise WHERE noiseID IN ( 9503, 9508, 9510 );"
+await S s2 || echo "FAIL: snapshot session hangs"
+check "GMP noise committed after the caller's snapshot is checked as it is" \
+      "201 $GMP (noise of such models 9510) 3" \
+      "$( echo $( between S s1 s2 ) )"
+close_session S
+q "DELETE FROM noise WHERE noiseID = 9510;
+   DELETE FROM modelPerson WHERE modelID = 9408;
+   DELETE FROM model WHERE modelID = 9408;
+   DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9705;" > /dev/null
 check "... and nothing changed" "$FULL" "$( q "$STATE" )"
 
 # A GMP link committed while the call waits for a row lock (three
@@ -603,7 +659,12 @@ echo "   delete_editedData, nothing protected: $( echo "$out" | tail -1 ) s"
 check "nothing protected: deleted, within $LIMIT s" "0 0 fast" \
       "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
 
-q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+# ... and one link naming model 20500; the edit also has model 2050,
+# whose ID is part of that one's, and which is not protected
+q "INSERT INTO model ( modelID, editedDataID, modelGUID, description, xml )
+     VALUES ( 2050, 9310, '00000000-0000-4000-8000-000000002050', 'many.part.model', '<model/>' );
+   INSERT INTO modelPerson ( modelID, personID ) VALUES ( 2050, 902 );
+   INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
      VALUES ( 41000, '{\"PCSA\":[{\"modelID\":\"20500\"}]}', 9801 )" > /dev/null
 out=$( timed "CALL delete_editedData( $ALICE, 9310 );
               SELECT LEFT( last_error(), 250 )" )
@@ -619,6 +680,92 @@ check "... and without that link alice deletes it all" "0 | 0 0 0" \
                      SELECT COUNT(*) FROM model WHERE modelID BETWEEN 20000 AND 20999;
                      SELECT COUNT(*) FROM noise WHERE noiseID BETWEEN 30000 AND 30999;
                      SELECT COUNT(*) FROM editedData WHERE editedDataID = 9310" ) )"
+
+# 20000 links, each naming nine models of other edits, and an edit with a
+# single model.  Building the list of every GMP model ID with CONCAT took
+# time quadratic in the number of links (15 s here, against 0.4 s with
+# 1000 links); each ID is now looked up in the short list of the edit's
+# own models.  The same limit applies.
+SEQ5="( SELECT a.d + 10 * b.d + 100 * c.d + 1000 * e.d + 10000 * f.d AS i
+        FROM   ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) a,
+               ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) b,
+               ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) c,
+               ( SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 ) e,
+               ( SELECT 0 AS d UNION ALL SELECT 1 ) f ) s"
+setup $MYSQL "$DB" -e "
+   SET FOREIGN_KEY_CHECKS = 0;
+   INSERT INTO editedData ( editedDataID, rawDataID, editGUID, label, data, filename, comment )
+     VALUES ( 9311, 9201, '00000000-0000-4000-8000-000000009311', 'smoke_one', 'EDIT-9311',
+              'smoke_alpha.one.xml', '' );
+   INSERT INTO model ( modelID, editedDataID, modelGUID, description, xml )
+     VALUES ( 21000, 9311, '00000000-0000-4000-8000-000000021000', 'one.model', '<model/>' );
+   INSERT INTO modelPerson ( modelID, personID ) VALUES ( 21000, 902 );
+   INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     SELECT 50000 + i,
+            CONCAT( '{',
+              '\"2DSA_IT\":[', $( link "200000 + 9 * i" ), ',', $( link "200001 + 9 * i" ), ',', $( link "200002 + 9 * i" ), '],',
+              '\"2DSA_MC\":[', $( link "200003 + 9 * i" ), ',', $( link "200004 + 9 * i" ), ',', $( link "200005 + 9 * i" ), '],',
+              '\"PCSA\":[',    $( link "200006 + 9 * i" ), ',', $( link "200007 + 9 * i" ), ',', $( link "200008 + 9 * i" ), ']}' ),
+            9801
+     FROM $SEQ5;
+   SET FOREIGN_KEY_CHECKS = 1;"
+check "an edit with one model, and 20000 links (9 models each) loaded" "1 20000 180000" \
+      "$( echo $( q "SELECT COUNT(*) FROM model WHERE editedDataID = 9311;
+                     SELECT COUNT(*), SUM( JSON_LENGTH( JSON_EXTRACT( modelsDesc, '$.*[*].modelID' ) ) )
+                     FROM autoflowModelsLink WHERE autoflowAnalysisID >= 50000" ) )"
+
+out=$( timed "START TRANSACTION;
+              CALL delete_editedData( $ALICE, 9311 );
+              SELECT COUNT(*), LEFT( last_error(), 200 ) FROM model WHERE editedDataID = 9311;
+              ROLLBACK" )
+echo "   delete_editedData, 20000 links, nothing protected: $( echo "$out" | tail -1 ) s"
+check "20000 links, nothing protected: deleted, within $LIMIT s" "0 0 fast" \
+      "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
+
+# The last link names the model
+q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+     VALUES ( 79999, '{\"PCSA\":[{\"modelID\":\"21000\"}]}', 9801 )" > /dev/null
+out=$( timed "CALL delete_editedData( $ALICE, 9311 );
+              SELECT LEFT( last_error(), 250 )" )
+echo "   delete_editedData, 20000 links, its model protected: $( echo "$out" | tail -1 ) s"
+check "20000 links, the last protects its model: refused, within $LIMIT s" \
+      "201 $GMP (models 21000) fast" \
+      "$( echo $( echo "$out" | sed '$d' ) $( fast "$( echo "$out" | tail -1 )" ) )"
+q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID >= 50000" > /dev/null
+
+# More link text than max_allowed_packet: the list of every GMP model ID
+# came out NULL there (CONCAT gives NULL past the packet size), and the
+# call deleted a GMP model.  Links whose modelID strings take 1 MB each,
+# more of them than the packet holds, and then the one that names the
+# model.  This writes as many MB as the packet size, so it runs only when
+# that is at most WRITE_PACKET_LIMIT MB (default 20: MariaDB's default
+# packet, not MySQL 8's 64 MB).
+PACKET_MB=$( q "SELECT CEIL( @@max_allowed_packet / 1048576 )" )
+if [ "$PACKET_MB" -le "${WRITE_PACKET_LIMIT:-20}" ]; then
+   q "SET FOREIGN_KEY_CHECKS = 0;
+      INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+        SELECT 60000 + i,
+               CONCAT( '{\"PCSA\":[{\"modelID\":\"', REPEAT( '7', 1048576 ), '\"}]}' ), 9801
+        FROM $SEQ WHERE i < $PACKET_MB + 2;
+      INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+        VALUES ( 69999, '{\"PCSA\":[{\"modelID\":\"21000\"}]}', 9801 );
+      SET FOREIGN_KEY_CHECKS = 1;" > /dev/null
+   check "links of more than max_allowed_packet ($PACKET_MB MB) in all, then one naming its model: refused" \
+         "201 $GMP (models 21000)" \
+         "$( echo $( q "CALL delete_editedData( $ALICE, 9311 );
+                        SELECT LEFT( last_error(), 250 )" ) )"
+   q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID >= 60000" > /dev/null
+else
+   echo "note: max_allowed_packet is $PACKET_MB MB, more than WRITE_PACKET_LIMIT;" \
+        "the check with more link text than that is skipped"
+fi
+check "... and without those links alice deletes the edit" "0 0" \
+      "$( echo $( q "CALL delete_editedData( $ALICE, 9311 );
+                     SELECT COUNT(*) FROM model WHERE modelID = 21000" ) )"
 
 echo "== create_buffer_component"
 
