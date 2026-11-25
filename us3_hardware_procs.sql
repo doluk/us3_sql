@@ -1894,6 +1894,11 @@ BEGIN
       END IF;
 
     ELSE
+      -- Also on a server with lower_case_table_names 1 or 2, where the
+      -- table name is stored or compared in lower case:
+      -- information_schema compares TABLE_NAME without case there
+      -- (MySQL 8.0: utf8mb3_tolower_ci; MariaDB and MySQL 5.7: a _ci
+      -- collation always)
       SELECT COUNT(*) = 0
       INTO   l_null_ok
       FROM   information_schema.COLUMNS

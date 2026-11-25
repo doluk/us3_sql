@@ -1394,14 +1394,13 @@ END$$
 --     ID of {"modelID":"9405" and of "modelID": 9405, also in a
 --     truncated text) -- written as the model's ID exactly: a run with a
 --     leading zero ("09405") names no model, nor does one that starts 8
---     or more characters further on.  Such a row does not make the JSON
---     functions fail: it used to stop every edit deletion on MariaDB
---     (error 4038).
+--     or more characters further on.  Such a row is never handed to a
+--     JSON function that would fail on it (error 4038 on MariaDB, 3141
+--     on MySQL).
 --   - NULL is no reference.
 --
--- autoflow_model_ids, which gathered every GMP model ID of the table into
--- one list, is gone: it took time quadratic in the number of links, and
--- answered anyone, without a login.  model_in_autoflow went before it.
+-- Helpers of pre-release copies of this file, dropped where a load left
+-- them behind (autoflow_model_ids answered anyone, without a login).
 DROP FUNCTION IF EXISTS model_in_autoflow$$
 DROP PROCEDURE IF EXISTS autoflow_model_ids$$
 
@@ -1489,7 +1488,14 @@ END$$
 --   GMP link waits (and fails with error 1205 after
 --   innodb_lock_wait_timeout, 50 s by default).  For an edit with no
 --   models and no noise, which no link can protect, the call neither
---   reads nor locks autoflowModelsLink.  On a refusal inside a
+--   reads nor locks autoflowModelsLink.  Under REPEATABLE READ the
+--   locking reads of models and noise also lock the gaps next to the
+--   edit's entries in their editedDataID indexes (next-key locks): until
+--   the transaction ends, a model or noise record inserted for this edit,
+--   or for another edit whose ID falls in such a gap, waits -- when this
+--   edit has the highest ID that has models, for every newer edit, so
+--   new fits of the latest data wait while a caller's transaction that
+--   called this procedure is open.  On a refusal inside a
 --   caller's transaction the locks stay until that transaction ends
 --   (InnoDB keeps row locks across ROLLBACK TO SAVEPOINT).
 --   Under READ COMMITTED (a caller's transaction, or the session's
@@ -1523,6 +1529,13 @@ END$$
 --   same goes for any other error after which the savepoint is gone (a
 --   lock wait timeout with innodb_rollback_on_timeout on).  @US3_LAST_ERRNO
 --   is then @ERROR and @US3_LAST_ERROR says what happened.
+--   This call locks the edit's models before their noise.  A connection
+--   that removes a model the other way round -- its noise first and the
+--   model after, as delete_model does, and UltraScan3, which deletes the
+--   noise with delete_noise before it calls delete_model -- can deadlock
+--   with it on the same records.  That is not prevented, but reported as
+--   above: the server rolls one of the two back with error 1213, and
+--   either may be repeated.
 --
 -- Other investigators' records
 --   Ownership is checked by model (modelPerson): a noise record is the
