@@ -166,6 +166,11 @@ delete_editedData (us3_expdata_procs.sql) now:
     caller's transaction, until the caller commits or rolls back -- and
     meanwhile a GMP writer that inserts, changes or deletes a link waits
     for it, failing with error 1205 after innodb_lock_wait_timeout;
+  - deletes only the models and noise records it checked: under READ
+    COMMITTED, which takes no gap locks, one that another connection
+    commits against the edit after the checks stays, the edit's own
+    delete fails on its foreign key, and the call answers
+    @CONSTRAINT_FAILED (404), deleting nothing;
   - raises error 1213 (SQLSTATE 40001) instead of answering a status when
     a deadlock inside a caller's transaction made the server roll that
     whole transaction back (and likewise re-raises any other error after

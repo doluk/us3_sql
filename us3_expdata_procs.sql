@@ -1490,6 +1490,12 @@ END$$
 --   innodb_lock_wait_timeout, 50 s by default).  On a refusal inside a
 --   caller's transaction the locks stay until that transaction ends
 --   (InnoDB keeps row locks across ROLLBACK TO SAVEPOINT).
+--   Under READ COMMITTED (a caller's transaction, or the session's
+--   isolation level) InnoDB takes no gap locks, so another connection can
+--   commit a model or noise record against the edit after the call
+--   checked the edit's records.  The call deletes only the records it
+--   checked: such a newcomer stays, the edit's own delete fails on its
+--   foreign key, and the call answers @CONSTRAINT_FAILED, nothing deleted.
 --
 -- All or nothing
 --   The deletes run in a transaction of their own when the caller is not
@@ -1555,6 +1561,8 @@ BEGIN
   DECLARE l_gmp_noise2     TEXT    DEFAULT NULL;
   DECLARE l_other_noise2   TEXT    DEFAULT NULL;
   DECLARE l_candidates     LONGBLOB DEFAULT ',';
+  DECLARE l_model_ids      LONGBLOB DEFAULT ',';
+  DECLARE l_noise_ids      LONGBLOB DEFAULT ',';
   DECLARE l_gmp_ids        LONGBLOB DEFAULT ',';
 
   DECLARE EXIT HANDLER FOR SQLEXCEPTION
@@ -1699,13 +1707,24 @@ BEGIN
     AND        n.editedDataID != p_editedDataID
     FOR UPDATE;
 
-    -- The models whose GMP links matter, as the list ",id,id,...,": the
-    -- edit's models (the noise fitted with them is theirs) and the models
-    -- the noise recorded against the edit was fitted with.  Locking reads,
-    -- of rows locked above, so that they are the rows as they are.
+    -- The edit's models (l_model_ids) and the noise recorded against it
+    -- (l_noise_ids), each as a list ",id,id,...,": the records checked
+    -- above and below, read with locking reads of rows locked above, so
+    -- that they are the rows as they are.  The deletes take only these.
+    -- Under READ COMMITTED, which takes no gap locks, another connection
+    -- can commit a model or noise record against the edit after these
+    -- reads; it stays, and the edit's own delete then fails on its
+    -- foreign key (@CONSTRAINT_FAILED, everything rolled back) rather than
+    -- deleting a record nobody checked.  (Noise fitted with one of the
+    -- edit's models is that model's, and goes with it however late it
+    -- came: the model was checked.)  And the models whose GMP links
+    -- matter (l_candidates): the edit's models (the noise fitted with
+    -- them is theirs) and the models the noise recorded against the edit
+    -- was fitted with.
     BEGIN
       DECLARE l_done  TINYINT DEFAULT 0;
       DECLARE l_model INT;
+      DECLARE l_noise INT;
 
       DECLARE c_models CURSOR FOR
         SELECT   modelID
@@ -1714,7 +1733,7 @@ BEGIN
         FOR UPDATE;
 
       DECLARE c_noise_models CURSOR FOR
-        SELECT   modelID
+        SELECT   noiseID, modelID
         FROM     noise
         WHERE    editedDataID = p_editedDataID
         FOR UPDATE;
@@ -1730,14 +1749,16 @@ BEGIN
         SET l_candidates = CONCAT( l_candidates, l_model, ',' );
       END LOOP;
       CLOSE c_models;
+      SET l_model_ids = l_candidates;
 
       SET l_done = 0;
       OPEN c_noise_models;
       noise_models: LOOP
-        FETCH c_noise_models INTO l_model;
+        FETCH c_noise_models INTO l_noise, l_model;
         IF ( l_done = 1 ) THEN
           LEAVE noise_models;
         END IF;
+        SET l_noise_ids = CONCAT( l_noise_ids, l_noise, ',' );
         IF ( LOCATE( CONCAT( ',', l_model, ',' ), l_candidates ) = 0 ) THEN
           SET l_candidates = CONCAT( l_candidates, l_model, ',' );
         END IF;
@@ -1921,21 +1942,26 @@ BEGIN
       LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
       WHERE       reportDocument.editedDataID = p_editedDataID;
 
+      -- Only the edit's records checked above (see l_model_ids)
       DELETE      FROM noise
-      WHERE       editedDataID = p_editedDataID;
+      WHERE       editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', noiseID, ',' ), l_noise_ids ) > 0;
 
       DELETE      noise
       FROM        noise
       JOIN        model ON ( model.modelID = noise.modelID )
-      WHERE       model.editedDataID = p_editedDataID;
+      WHERE       model.editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', model.modelID, ',' ), l_model_ids ) > 0;
 
       DELETE      modelPerson
       FROM        modelPerson
       JOIN        model ON ( model.modelID = modelPerson.modelID )
-      WHERE       model.editedDataID = p_editedDataID;
+      WHERE       model.editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', model.modelID, ',' ), l_model_ids ) > 0;
 
       DELETE      FROM model
-      WHERE       editedDataID = p_editedDataID;
+      WHERE       editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', modelID, ',' ), l_model_ids ) > 0;
 
       DELETE      FROM pcsa_modelrecs
       WHERE       editedDataID = p_editedDataID;

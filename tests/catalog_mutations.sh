@@ -9,7 +9,8 @@
 # semantics, the "magic" experiment 1; in delete_editedData,
 # create_buffer_component and add_buffer_component a permission, GMP or
 # ownership check dropped, the GMP links read without a lock (a
-# caller's snapshot from before the call waited), the GMP rule loosened (2DSA_MC
+# caller's snapshot from before the call waited), records deleted that it
+# did not check (READ COMMITTED), the GMP rule loosened (2DSA_MC
 # ignored, a substring match, a fraction rounded, a comma-separated string
 # taken as a list) or failing on 1e400, the edit's models read from a
 # stale snapshot, the savepoint logic or the deadlock report broken, the
@@ -86,8 +87,10 @@ del-foreign-owner-snapshot	us3_expdata_procs.sql	s/\n  LOCK IN SHARE MODE;/;/
 del-foreign-noise-snapshot	us3_expdata_procs.sql	s/(FROM       noise\n    WHERE      editedDataID = p_editedDataID)\n    FOR UPDATE;/$1;/
 del-always-own-trx	us3_expdata_procs.sql	s/IF \( l_in_trx = 1 \) THEN\n      SAVEPOINT us3_delete_editedData_sp;/IF ( 0 ) THEN\n      SAVEPOINT us3_delete_editedData_sp;/
 del-always-savepoint	us3_expdata_procs.sql	s/DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 0;/DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 1;/
-del-no-noise-by-edit	us3_expdata_procs.sql	s/DELETE      FROM noise\n      WHERE       editedDataID = p_editedDataID;//
-del-no-noise-by-model	us3_expdata_procs.sql	s/DELETE      noise\n      FROM        noise\n      JOIN        model ON \( model\.modelID = noise\.modelID \)\n      WHERE       model\.editedDataID = p_editedDataID;//
+del-no-noise-by-edit	us3_expdata_procs.sql	s/DELETE      FROM noise\n      WHERE       editedDataID = p_editedDataID\n[^;]*;//
+del-no-noise-by-model	us3_expdata_procs.sql	s/DELETE      noise\n      FROM        noise\n      JOIN        model ON \( model\.modelID = noise\.modelID \)\n      WHERE       model\.editedDataID = p_editedDataID\n[^;]*;//
+del-rc-unchecked-noise	us3_expdata_procs.sql	s/\n      AND         LOCATE\( CONCAT\( ',', noiseID, ',' \), l_noise_ids \) > 0;/;/
+del-rc-unchecked-models	us3_expdata_procs.sql	s/\n      AND         LOCATE\( CONCAT\( ',', (?:model\.)?modelID, ',' \), l_model_ids \) > 0;/;/g
 del-1451-as-error	us3_expdata_procs.sql	s/IN \( 1451, 1452 \)/IN ( 9999 )/
 del-no-rollback-own	us3_expdata_procs.sql	s/      ELSE\n        ROLLBACK;\n\n      END IF;/      ELSE\n        COMMIT;\n\n      END IF;/
 del-deadlock-as-status	us3_expdata_procs.sql	s/IF \( l_lost = 1 \) THEN/IF ( 0 ) THEN/

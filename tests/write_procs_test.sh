@@ -21,6 +21,9 @@
 #       recorded (also noise computed from another experiment's edit),
 #       and the noise recorded against the edit for a model of another
 #       edit (a global fit);
+#     - under READ COMMITTED, a model or noise record committed against
+#       the edit after the call checked its records is not deleted: the
+#       call fails on the edit's foreign key, deleting nothing;
 #     - is all or nothing: when the edit cannot be deleted, nothing that
 #       depends on it is deleted either, and the status says why --
 #       standalone, inside a caller's open transaction (which it must
@@ -477,6 +480,64 @@ gmp_race()
 gmp_race "autocommit" ""
 gmp_race "after START TRANSACTION" "START TRANSACTION;"
 gmp_race "with autocommit off" "SET autocommit = 0;"
+
+# READ COMMITTED takes no gap locks: a record committed against the edit
+# after the call checked its records must not be deleted unchecked.  X
+# holds a new report document of edit 9302, so that alice's call, its
+# checks done, waits in its deletes; meanwhile another connection commits
+# a record against 9302 that alice may not delete, and X lets go.  The
+# call must leave that record, fail on the edit's foreign key and delete
+# nothing.  (It deleted the newcomer, unchecked.)
+# rc_race <label> <statements before the call> <the record, inserted>
+#         <the record's count> <its removal>
+rc_race()
+{
+   open_session X
+   open_session A
+   send X "START TRANSACTION;
+           INSERT INTO reportDocument ( reportDocumentGUID, editedDataID )
+             VALUES ( '00000000-0000-4000-8000-00000000c001', 9302 );"
+   await X x1 || echo "FAIL: READ COMMITTED race ($1): session X hangs"
+   send A "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+           $2
+           CALL delete_editedData( $ALICE, 9302 );
+           SELECT last_errno(), LOCATE( 'error 1451', last_error() ) > 0;
+           $4;
+           ROLLBACK;"
+   if lock_wait A; then
+      q "$3" > /dev/null
+      send X "ROLLBACK;"
+      await X x2 || echo "FAIL: READ COMMITTED race ($1): session X hangs"
+      await A a1 || echo "FAIL: READ COMMITTED race ($1): session A hangs"
+      check "READ COMMITTED, $1: refused on the foreign key, the newcomer stays" \
+            "404 404 1 1" "$( echo $( between A opened a1 ) )"
+   else
+      check "READ COMMITTED race ($1): the call waits for X's report document" "waits" "does not"
+   fi
+   close_session X
+   close_session A
+   q "$5" > /dev/null
+   check "... and nothing changed" "$FULL" "$( q "$STATE" )"
+}
+NEWNOISE="INSERT INTO noise ( noiseID, noiseGUID, editedDataID, modelID, modelGUID,
+                             noiseType, description, xml )
+            VALUES ( 9510, '00000000-0000-4000-8000-000000009510', 9302, 9405,
+                     '00000000-0000-4000-8000-000000009405', 'ti_noise', 'bob.noise', '<noise/>' )"
+NEWMODEL="INSERT INTO model ( modelID, editedDataID, modelGUID, description, xml )
+            VALUES ( 9408, 9302, '00000000-0000-4000-8000-000000009408', 'carol.model', '<model/>' );
+          INSERT INTO modelPerson ( modelID, personID ) VALUES ( 9408, 904 )"
+rc_race "bob's noise, autocommit" "" "$NEWNOISE" \
+        "SELECT COUNT(*) FROM noise WHERE noiseID = 9510" \
+        "DELETE FROM noise WHERE noiseID = 9510"
+rc_race "bob's noise, in a transaction" "START TRANSACTION;" "$NEWNOISE" \
+        "SELECT COUNT(*) FROM noise WHERE noiseID = 9510" \
+        "DELETE FROM noise WHERE noiseID = 9510"
+rc_race "carol's model, autocommit" "" "$NEWMODEL" \
+        "SELECT COUNT(*) FROM modelPerson WHERE modelID = 9408" \
+        "DELETE FROM modelPerson WHERE modelID = 9408; DELETE FROM model WHERE modelID = 9408"
+rc_race "carol's model, in a transaction" "START TRANSACTION;" "$NEWMODEL" \
+        "SELECT COUNT(*) FROM modelPerson WHERE modelID = 9408" \
+        "DELETE FROM modelPerson WHERE modelID = 9408; DELETE FROM model WHERE modelID = 9408"
 
 echo "== delete_editedData: all or nothing"
 
