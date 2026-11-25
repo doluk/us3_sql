@@ -125,11 +125,23 @@ version-dropped-last	us3_procedures.sql	s/(DROP FUNCTION IF EXISTS us3_catalog_v
 EOF
 )
 
-caught=0 survived=0 broken=0
+caught=0 survived=0 broken=0 skipped=0
+
+# Mutations that only a MariaDB server can show: MySQL's JSON refuses a
+# number a double cannot hold (1e400), so the guard against it is never
+# reached there
+mariadb_only="del-gmp-huge-number-fails"
+server=$( ${MYSQL:-mysql} -N -B -e "SELECT VERSION()" 2> /dev/null )
 
 while IFS=$'\t' read -r name file subst; do
    [ -z "$name" ] && continue
    if [ $# -gt 0 ] && ! printf '%s\n' "$@" | grep -qx "$name"; then
+      continue
+   fi
+
+   if [[ "$server" != *MariaDB* ]] && printf '%s\n' $mariadb_only | grep -qx "$name"; then
+      echo "skipped  $name: only a MariaDB server can show it"
+      skipped=$(( skipped + 1 ))
       continue
    fi
 
@@ -171,7 +183,7 @@ while IFS=$'\t' read -r name file subst; do
    esac
 done <<< "$mutations"
 
-echo "== $caught caught, $survived survived, $broken broken"
+echo "== $caught caught, $survived survived, $broken broken, $skipped skipped"
 
 [ "$broken" -gt 0 ] && exit 2
 [ "$survived" -eq 0 ]

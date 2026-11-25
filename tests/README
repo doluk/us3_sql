@@ -122,7 +122,8 @@ or range check, its form check, its invalid-date status or its NOT NULL
 guard, storing NOW() or ignoring NULL; the version marker in
 us3_procedures.sql answering 1, or dropped only just before it is
 created.  It prints
-"caught" or "SURVIVED" for each, and exits 1 if any survived, 2 if a
+"caught" or "SURVIVED" for each ("skipped" for the one about 1e400 on a
+server other than MariaDB, whose JSON is the only one to accept it), and exits 1 if any survived, 2 if a
 mutation no longer applies to its file.  Name mutations as arguments to
 run only those.  The whole set takes ten minutes or so.
 
