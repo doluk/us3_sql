@@ -1569,9 +1569,10 @@ END$$
 --   inside a caller's REPEATABLE READ transaction whose snapshot is older
 --   -- and noise another connection records against the edit meanwhile
 --   waits for the call to end.  autoflowModelsLink is read without
---   locking (a locking read would lock the whole table): inside a caller's
---   transaction a GMP link committed after its snapshot was taken is not
---   seen.  On a refusal inside a caller's transaction the locks stay until
+--   locking (a locking read would lock the whole table), after those row
+--   locks are taken, so a GMP link committed while the call waited for
+--   one is seen; inside a caller's transaction a GMP link committed after
+--   its snapshot was taken is not.  On a refusal inside a caller's transaction the locks stay until
 --   that transaction ends (InnoDB keeps row locks across ROLLBACK TO
 --   SAVEPOINT).
 --
@@ -1736,10 +1737,6 @@ BEGIN
 
   ELSE
 
-    -- The models GMP protects, read once (autoflow_model_ids), before any
-    -- row lock is taken
-    CALL autoflow_model_ids( l_gmp_ids );
-
     -- Is the caller in a transaction?  A savepoint outlives the statement
     -- that set it only inside one; outside, autocommit ends it at once and
     -- releasing it fails.  (@@in_transaction would say so directly, but
@@ -1761,30 +1758,54 @@ BEGIN
     -- from the edit, and the noise fitted with its models -- read with
     -- locking reads, which see what is committed now even under the
     -- snapshot of a caller's REPEATABLE READ transaction.  They lock only
-    -- rows the deletes below lock anyway.
-    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, modelID, NULL )
-                             ORDER BY modelID ),
-               GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, modelID, NULL )
+    -- rows the deletes below lock anyway.  Another investigator's records
+    -- first: these reads take the row locks, and may wait for them.
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, modelID, NULL )
                              ORDER BY modelID )
-    INTO       l_gmp_models, l_other_models
+    INTO       l_other_models
+    FROM       model
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, noiseID, NULL )
+                             ORDER BY noiseID )
+    INTO       l_other_noise
+    FROM       noise
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( n.modelID ) = 1, n.noiseID, NULL )
+                             ORDER BY n.noiseID )
+    INTO       l_other_noise2
+    FROM       model m
+    JOIN       noise n ON ( n.modelID = m.modelID )
+    WHERE      m.editedDataID = p_editedDataID
+    AND        n.editedDataID != p_editedDataID
+    FOR UPDATE;
+
+    -- The models GMP protects, read once (autoflow_model_ids) and only
+    -- now that the rows are locked: a link committed while this call
+    -- waited for a lock is seen (the transaction's snapshot is taken by
+    -- this first plain read, unless the caller's transaction has one)
+    CALL autoflow_model_ids( l_gmp_ids );
+
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, modelID, NULL )
+                             ORDER BY modelID )
+    INTO       l_gmp_models
     FROM       model
     WHERE      editedDataID = p_editedDataID
     FOR UPDATE;
 
     SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, noiseID, NULL )
-                             ORDER BY noiseID ),
-               GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, noiseID, NULL )
                              ORDER BY noiseID )
-    INTO       l_gmp_noise, l_other_noise
+    INTO       l_gmp_noise
     FROM       noise
     WHERE      editedDataID = p_editedDataID
     FOR UPDATE;
 
     SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', n.modelID, ',' ), l_gmp_ids ) > 0, n.noiseID, NULL )
-                             ORDER BY n.noiseID ),
-               GROUP_CONCAT( IF( model_of_other_investigator( n.modelID ) = 1, n.noiseID, NULL )
                              ORDER BY n.noiseID )
-    INTO       l_gmp_noise2, l_other_noise2
+    INTO       l_gmp_noise2
     FROM       model m
     JOIN       noise n ON ( n.modelID = m.modelID )
     WHERE      m.editedDataID = p_editedDataID

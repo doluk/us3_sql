@@ -8,8 +8,9 @@
 # an ORDER BY dropped, a blob hashed or not hashed, the old noise
 # semantics, the "magic" experiment 1; in delete_editedData,
 # create_buffer_component and add_buffer_component a permission, GMP or
-# ownership check dropped, the savepoint logic or the deadlock report
-# broken, the locking read of the highest component ID back, the retries
+# ownership check dropped, the GMP links read before the row locks (a
+# snapshot taken before the call waited), the savepoint logic or the
+# deadlock report broken, the locking read of the highest component ID back, the retries
 # gone, a stale ID reported; in the autoflow procedures that insert a row
 # with the caller's key, a stale ID reported, or one for a record that was
 # not copied; in clear_experiment_fields and set_rotor_calibration_date a
@@ -68,6 +69,7 @@ del-gmp-any-key	us3_expdata_procs.sql	s/JSON_EXTRACT\( l_desc, '\$\."2DSA_IT"\[\
 del-gmp-no-json-valid	us3_expdata_procs.sql	s/IF \( JSON_VALID\( l_desc \) \) THEN/IF ( 1 ) THEN/
 del-gmp-invalid-ignored	us3_expdata_procs.sql	s/SET l_pos    = LOCATE\( 'modelID', l_raw \);/SET l_pos    = 0;/
 del-gmp-substring	us3_expdata_procs.sql	s/LOCATE\( CONCAT\( ',', (n\.)?modelID, ',' \), l_gmp_ids \)/LOCATE( $1modelID, l_gmp_ids )/g
+del-gmp-links-before-locks	us3_expdata_procs.sql	s/(    SET l_started = 1;\n)/$1    SELECT COUNT(*) INTO l_count_edits FROM autoflowModelsLink;\n/
 del-no-foreign-check	us3_expdata_procs.sql	s/ELSEIF \( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL \) THEN/ELSEIF ( 0 ) THEN/
 del-no-foreign-models	us3_expdata_procs.sql	s/GROUP_CONCAT\( IF\( model_of_other_investigator\( modelID \) = 1, modelID, NULL \)/GROUP_CONCAT( IF( 0, modelID, NULL )/
 del-foreign-for-admin-too	us3_expdata_procs.sql	s/IF \( \@USERLEVEL >= \@US3_ADMIN \) THEN\n    RETURN 0;/IF ( 0 ) THEN\n    RETURN 0;/

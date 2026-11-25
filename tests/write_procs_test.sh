@@ -14,7 +14,8 @@
 #       which must not make the call fail), for everybody, and another
 #       investigator's models and noise, for anyone but an administrator --
 #       also when they were committed after the caller's transaction took
-#       its snapshot;
+#       its snapshot -- and a GMP link committed while the call waits for
+#       a row lock (three sessions);
 #     - deletes the edit, its models and their noise wherever it was
 #       recorded (also noise computed from another experiment's edit),
 #       and the noise recorded against the edit for a model of another
@@ -373,6 +374,35 @@ close_session S
 q "DELETE FROM noise WHERE noiseID = 9510;
    DELETE FROM modelPerson WHERE modelID = 9408;
    DELETE FROM model WHERE modelID = 9408;" > /dev/null
+check "... and nothing changed" "$FULL" "$( q "$STATE" )"
+
+# A GMP link committed while the call waits for a row lock (three
+# sessions).  A holds a lock on model 9402 of edit 9302; B, an
+# administrator, deletes 9302 and waits for that lock; meanwhile a third
+# connection records a GMP link naming 9402, and then A lets go.  B must
+# read the links only once it has its locks, and so refuse.  (Reading them
+# before the locks, B deleted the GMP model.)
+open_session A
+open_session B
+send A "START TRANSACTION;
+        SELECT modelID FROM model WHERE modelID = 9402 FOR UPDATE;"
+await A a1 || echo "FAIL: GMP race: session A hangs"
+send B "CALL delete_editedData( $ADMIN, 9302 );
+        SELECT LEFT( last_error(), 250 );"
+if lock_wait B; then
+   q "INSERT INTO autoflowModelsLink ( autoflowAnalysisID, modelsDesc, autoflowID )
+        VALUES ( 9703, '{\"PCSA\":[{\"modelID\":\"9402\"}]}', 9801 )" > /dev/null
+   send A "COMMIT;"
+   await A a2 || echo "FAIL: GMP race: session A hangs"
+   await B b1 || echo "FAIL: GMP race: session B hangs"
+   check "a GMP link committed while the call waits for a row lock: refused" \
+         "201 $GMP (models 9402)" "$( echo $( between B opened b1 ) )"
+else
+   check "GMP race: session B waits for A's lock on model 9402" "waits" "does not"
+fi
+close_session A
+close_session B
+q "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = 9703" > /dev/null
 check "... and nothing changed" "$FULL" "$( q "$STATE" )"
 
 echo "== delete_editedData: all or nothing"
