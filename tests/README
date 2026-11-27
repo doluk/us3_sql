@@ -1,0 +1,115 @@
+Tests for the us3_sql scripts
+=============================
+
+catalog_smoke.sh      smoke test for the procedures in us3_catalog_procs.sql
+catalog_fixture.sql   the data set it loads
+
+It runs against a real server: it creates a scratch database, load
+us3.sql, us3_procedures.sql and catalog_fixture.sql into it, and drop it
+again at the end, also when they fail or are interrupted (KEEP_DB=1 leaves
+it behind for a closer look).
+
+
+Running them
+------------
+
+Give the client command line in MYSQL, without a database name.  Keep the
+password off it: put the connection settings in an option file,
+
+    [client]
+    host     = 127.0.0.1
+    port     = 3306
+    user     = root
+    password = secret
+
+and pass that with --defaults-extra-file (it must be the first option):
+
+    MYSQL="mysql --defaults-extra-file=$HOME/smoke.cnf" tests/catalog_smoke.sh
+
+or export the password as MYSQL_PWD.  A -psecret on the command line also
+works -- the client's warnings go to a file, not into what the tests
+parse, and a call counts as failed only by the client's exit status -- but
+it puts the password in the process list.  The MariaDB client is used the
+same way (MYSQL="mariadb --defaults-extra-file=...").
+
+It prints "== N passed, 0 failed" and exits 0 when everything passes,
+1 when a check fails and 2 when the database could not be set up.  The
+scratch database is us3_catalog_smoke (SMOKE_DB); it is DROPPED first.
+
+The account needs to create databases and routines.  On a server with
+binary logging, which MySQL 8 has on by default, creating the functions in
+us3_procedures.sql also needs SUPER, or the server started with
+log_bin_trust_function_creators = 1; otherwise they fail with error 1418.
+
+
+catalog_smoke.sh
+----------------
+
+Calls each catalog procedure as an administrator (for everybody and for
+one investigator), as each investigator, as a stranger, and with every
+kind of failed login: a bad password, an account that does not exist, one
+not activated, one disabled, one at userlevel 1, and an empty personGUID.
+For each call it checks:
+
+  - the status;
+  - the names and order of the data set's columns, against golden lists
+    taken from the row readers in UltraScan3's utils/us_data_catalog.cpp
+    (which read the columns by position) -- also for
+    get_model_desc_by_editID and get_noise_desc_by_editID, which the same
+    readers read;
+  - the number of rows, and for many calls which records, in which order;
+  - the values of the columns callers use: IDs, GUIDs, file names,
+    checksums and sizes (and that the *_by_person procedures hash
+    nothing: their checksum and size are NULL), and that each UTC_ column
+    holds what timestamp2UTC() gives for the fixture's timestamp and is a
+    DATETIME, not the table's TIMESTAMP (on a server running in UTC a
+    dropped conversion would not change the value);
+  - that every count get_experiment_summary reports is what the matching
+    detail procedure returns for the same caller.
+
+The fixture covers the cases that are easy to get wrong: an experiment
+with three experimentPerson rows (two of them the same person), a model
+another investigator fitted to someone's edit, a model and noise record
+with no modelPerson row, an empty experiment, one linked to nobody,
+experiment 1 (which verify_experiment_permission() opens to anyone, and
+the catalog procedures must not), global-fit noise recorded against one
+experiment's edit but fitted with another experiment's model, and a model
+on the UNASSIGNED edit.  Its record IDs are not in the order the
+procedures sort by, and its timestamps are fixed.
+
+SMOKE_CATALOG=file loads that file after us3_procedures.sql, over the
+catalog procedures it sources.
+
+
+us3.sql on MySQL 8.0
+--------------------
+
+us3.sql does not load cleanly on MySQL 8.0 (checked on 8.0.46).  The
+tests therefore load it with --force, print whatever failed (the smoke
+test does), and only insist on the tables the procedures read.  What
+fails today:
+
+  - line 7: SET SQL_MODE names NO_AUTO_CREATE_USER, which MySQL 8.0
+    removed (error 1231).  The statement fails, so the session keeps the
+    server's default sql_mode, which has NO_ZERO_DATE, and so:
+  - HPCAnalysisRequest and HPCAnalysisResult are not created: their
+    zero-date TIMESTAMP defaults are invalid under NO_ZERO_DATE (1067).
+    They load once NO_AUTO_CREATE_USER is dropped from line 7.
+  - autoflowAnalysis, autoflowAnalysisHistory, autoflowStages,
+    autoflowAnalysisStages, autoflowIntensity, autoflowAnalysisABDEStages
+    and autoflowAnalysisVelMwlStages are not created: they give TEXT
+    columns literal defaults (DEFAULT "localhost" and the like), which
+    MySQL 8.0 refuses in any sql_mode (1101).  MariaDB accepts them.
+  - the four DROP INDEX IF EXISTS / CREATE INDEX IF NOT EXISTS statements
+    for personal_access_tokens are MariaDB syntax (1064); the table itself
+    is created without those two indexes.
+
+None of these tables is used by the procedures tested here, and
+us3_procedures.sql loads with no errors.  One more MySQL 8.0 difference
+shows only when procedures run: get_instrument_info_new,
+add_instrument_new, update_instrument_new and decode_instrument_passw
+(us3_hardware_procs.sql) call ENCODE() / DECODE(), which MySQL 8.0.3
+removed, so they fail with "FUNCTION ... DECODE does not exist".
+
+On MariaDB (checked on 10.11.14) us3.sql loads with no errors at all, and
+the test passes there as well as on MySQL 8.0.46.
