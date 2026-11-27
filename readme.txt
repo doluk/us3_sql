@@ -156,3 +156,92 @@ procedures" and "Add bulk catalog procedures that do not hash the data
 blobs"), which ehb54/us3_sql does not have.  A pull request to
 ehb54/us3_sql must carry those two commits as well as the ones after
 them, or us3_procedures.sql sources a file that is not there.
+
+
+Logins hold a lock on the person's row (check_user and people.lastLogin)
+
+Every procedure that takes a personGUID and password logs the caller in
+with check_user() (us3_procedures.sql), and a successful login UPDATEs
+people.lastLogin for that person.  The UPDATE takes an exclusive lock on
+the person's people row until the transaction ends.  Normally each call
+is its own transaction and the lock is released at once.  But a client
+that opens a transaction and calls procedures inside it -- UltraScan3's
+data import does, for the whole import -- keeps the row locked until it
+commits or rolls back.  Meanwhile every other connection logging in as the
+same investigator waits in check_user(): a second program browsing the
+same data stalls, and fails with error 1205 (lock wait timeout) after
+innodb_lock_wait_timeout, 50 s by default.  Other investigators are not
+affected.
+
+A client should therefore keep transactions short, log in (call any
+procedure) just before opening one, and expect error 1205 in other
+programs of the same investigator while a long transaction is open.
+
+Removing the wait needs check_user() to stop writing on every call:
+record lastLogin once per session, in a login procedure a client calls
+when it connects (outside any transaction), and let check_user() only
+read.  Every client that relies on lastLogin (the LIMS web pages
+included) would have to call it, so that is a change to agree on.
+Skipping the UPDATE while the row is locked does not work: MySQL 8.0
+ignores SKIP LOCKED inside a stored function, MariaDB 10.11 waits all
+the same, and older servers lack SKIP LOCKED.
+
+
+create_buffer_component (changed behaviour)
+
+create_buffer_component (us3_buffer_procs.sql) reads the highest ID
+without a locking read (a locking read inside a caller's transaction
+held a gap lock until it ended and deadlocked other connections creating
+components), and when the ID is taken tries the next one, up to 100
+times, before answering @INSERTDUP (402).  It reports the ID it inserted
+through last_insertID().  A connection whose ID another transaction has
+inserted but not committed waits for that transaction, as for any
+duplicate key.  So while a long transaction that created a component is
+open -- UltraScan3's data import holds one for the whole import -- every
+other connection creating a component waits until it commits or rolls
+back, and fails with error 1205 after innodb_lock_wait_timeout (50 s by
+default).  There is no deadlock, and the IDs stay distinct.  Only giving
+bufferComponentID an AUTO_INCREMENT would remove that wait
+(AUTO_INCREMENT values are not held to the end of the transaction); that
+is a schema change, left for now.  The header of each procedure has the
+details.
+
+
+
+New procedures: clear_experiment_fields, set_rotor_calibration_date
+
+Two procedures for clients that copy records from elsewhere --
+UltraScan3's data import -- and must keep what update_experiment and
+add_rotor_calibration cannot store:
+
+  clear_experiment_fields( personGUID, password, experimentID,
+                           clearProtocol, clearRIProfile )
+    sets experiment.centrifugeProtocol and/or RIProfile to NULL
+    (update_experiment stores '' for NULL).  Allowed to an administrator
+    and to anyone with an experimentPerson row for the experiment
+    (verify_catalog_experiment; experiment 1 gets no special treatment).
+    Status 0, the login's codes, 201 or 508.  verify_catalog_experiment
+    is in us3_catalog_procs.sql, so load that file too when loading
+    us3_exp_procs.sql on its own.
+
+  set_rotor_calibration_date( personGUID, password, rotorCalibrationID,
+                              dateUpdated )
+    sets rotorCalibration.dateUpdated (add_rotor_calibration stores the
+    time of the call), in the connection's time zone; NULL stores NULL.
+    dateUpdated is a string, 'YYYY-MM-DD hh:mm:ss' or 'YYYY-MM-DD'
+    (midnight); the procedure converts it itself, so that a bad one is
+    answered with a status, not with error 1292 (a client passing a
+    quoted string sees no difference from a DATETIME parameter).  A
+    client that has the time in UTC sets time_zone = '+00:00' for the
+    call.  Administrators only, as add_rotor_calibration.  Status 0, the
+    login's codes, 201, 519 (no such calibration), or -1, changing
+    nothing, for a string of another form (an offset, fractions of a
+    second, a trailing newline) or a date that does not exist, a time
+    outside the TIMESTAMP range (in a time zone east of UTC, 1970-01-01
+    00:00:00 is before it), or NULL where the column is declared NOT
+    NULL (us3.sql declares it TIMESTAMP NULL; a TIMESTAMP declared
+    without NULL would store the time of the call under MySQL 5.7's
+    defaults, or refuse).
+
+UltraScan3's data import calls them inside its transaction; a database
+without them fails such an import, which is then rolled back.

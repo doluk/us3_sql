@@ -591,7 +591,9 @@ BEGIN
         bufferComponentID = p_componentID,
         concentration     = p_concentration;
 
-      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+      -- bufferLink has no generated key, so there is no new ID to report;
+      -- LAST_INSERT_ID() would be this connection's previous insert
+      SET @LAST_INSERT_ID = 0;
 
     END IF;
 
@@ -674,6 +676,29 @@ END$$
 
 
 -- creates a new buffer component
+--
+-- bufferComponent has no AUTO_INCREMENT key, so the new ID is one more
+-- than the highest in the table.  (It used to be the number of rows plus
+-- one, which is an existing ID as soon as there is a gap, and the insert
+-- then failed; and @LAST_INSERT_ID was LAST_INSERT_ID(), which an insert
+-- with an explicit key does not set, so it was whatever this connection
+-- last inserted elsewhere -- a caller linking "the new component" to a
+-- buffer linked a different one.)  @LAST_INSERT_ID is now the new
+-- component's ID, and 0 when nothing was inserted.
+--
+-- The highest ID is read without locking.  A locking read (FOR UPDATE)
+-- takes a gap lock above the highest ID, which inside a caller's
+-- transaction -- UltraScan3's import creates components in one -- is held
+-- until that transaction ends: every other connection creating a
+-- component waits for it, and two such transactions deadlock (1213).
+-- Without the lock, inside a caller's REPEATABLE READ transaction the read
+-- comes from the transaction's snapshot and may be behind what others
+-- have committed since; the INSERT checks the key against the table as it
+-- is, so when the ID is taken (1062) the next one is tried, until one is
+-- free, up to 100 times before giving up with @INSERTDUP.  Should another
+-- connection have inserted the same ID and not committed yet, the INSERT
+-- waits for that transaction to end (a wait on one row, not a deadlock),
+-- then takes the ID if it was rolled back or tries the next one.
 DROP PROCEDURE IF EXISTS create_buffer_component$$
 CREATE PROCEDURE create_buffer_component ( p_personGUID    CHAR(36),
                                         p_password      VARCHAR(80),
@@ -687,31 +712,61 @@ CREATE PROCEDURE create_buffer_component ( p_personGUID    CHAR(36),
   MODIFIES SQL DATA
 
 BEGIN
-  DECLARE count_bufferscomps    INT;
+  DECLARE l_componentID INT;
+  DECLARE l_duplicate   TINYINT DEFAULT 1;
+  DECLARE l_tries       INT     DEFAULT 0;
 
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
   SET @LAST_INSERT_ID = 0;
 
-  SELECT     COUNT(*)
-  INTO       count_bufferscomps
-  FROM       bufferComponent;
-
   IF ( verify_userlevel( p_personGUID, p_password, 2 ) = @OK ) THEN
 
-      INSERT INTO bufferComponent SET
-        bufferComponentID= count_bufferscomps+1,
-        description              = p_name,
-        units     = p_unit,
-        gradientForming        = p_grad_form,
-        density           = p_density,
-        viscosity         = p_viscosity,
-        c_range              = p_range;
+    -- Not a locking read; see above
+    SELECT     COALESCE( MAX( bufferComponentID ), 0 ) + 1
+    INTO       l_componentID
+    FROM       bufferComponent;
 
-      SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    WHILE ( l_duplicate = 1 AND l_tries < 100 ) DO
+      SET l_duplicate = 0;
+      SET l_tries     = l_tries + 1;
+
+      BEGIN
+        DECLARE CONTINUE HANDLER FOR 1062
+          SET l_duplicate = 1;
+
+        INSERT INTO bufferComponent SET
+          bufferComponentID = l_componentID,
+          description       = p_name,
+          units             = p_unit,
+          gradientForming   = p_grad_form,
+          density           = p_density,
+          viscosity         = p_viscosity,
+          c_range           = p_range;
+      END;
+
+      IF ( l_duplicate = 1 ) THEN
+        -- Taken: the next one, or past whatever this read can see now (in
+        -- autocommit mode, all that is committed)
+        SELECT     GREATEST( l_componentID + 1,
+                             COALESCE( MAX( bufferComponentID ), 0 ) + 1 )
+        INTO       l_componentID
+        FROM       bufferComponent;
+      END IF;
+
+    END WHILE;
+
+    IF ( l_duplicate = 1 ) THEN
+      SET @US3_LAST_ERRNO = @INSERTDUP;
+      SET @US3_LAST_ERROR = 'MySQL: could not find a free buffer component ID; try again';
+
+    ELSE
+      SET @LAST_INSERT_ID = l_componentID;
 
     END IF;
+
+  END IF;
 
   SELECT @US3_LAST_ERRNO AS status;
 
