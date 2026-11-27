@@ -128,32 +128,51 @@ BEGIN
 END$$
 
 
--- New timestamp2UCT, ensure time gaps are treated 
+-- Converts p_ts, a date and time in the connection's time zone -- as a
+-- TIMESTAMP column or NOW() gives it -- to UTC, with the offset in force
+-- at that time, not the offset now: UNIX_TIMESTAMP() reads its argument
+-- in the session time zone, with that zone's daylight-saving rules (the
+-- operating system's for SYSTEM), and needs no time zone tables.  So a
+-- winter and a summer time both come out right, also when the
+-- connection's time zone is not the server's.  A time that is not in
+-- the TIMESTAMP range, for which UNIX_TIMESTAMP() has no answer, is
+-- converted as before (the time zone tables if loaded, else the offset
+-- config() recorded).  NULL gives NULL.
 DROP FUNCTION IF EXISTS timestamp2UTC$$
 CREATE FUNCTION timestamp2UTC( p_ts DATETIME ) 
   RETURNS DATETIME
-  NO SQL
+  READS SQL DATA
 BEGIN
   DECLARE count_gmt INT;
+  DECLARE l_seconds BIGINT;
   DECLARE utcTime   DATETIME;
 
-  -- 1. Check for timezone table support
+  IF ( p_ts IS NULL ) THEN
+    RETURN( NULL );
+  END IF;
+
+  -- 0 (MySQL) or NULL (MariaDB) outside the TIMESTAMP range; 0 is also
+  -- 1970-01-01 00:00:00 UTC itself, which the fallback converts alike
+  SET l_seconds = UNIX_TIMESTAMP( p_ts );
+
+  IF ( l_seconds > 0 ) THEN
+    RETURN( DATE_ADD( '1970-01-01 00:00:00', INTERVAL l_seconds SECOND ) );
+  END IF;
+
+  -- Outside the TIMESTAMP range: as before
   SELECT COUNT(*) INTO count_gmt
   FROM mysql.time_zone_name
   WHERE name = 'UTC' OR name = 'GMT';
 
   IF ( count_gmt > 0 ) THEN
-    -- Try the conversion
     SET utcTime = CONVERT_TZ( p_ts, @@global.time_zone, 'UTC');
 
-    -- 2. GAP CHECK: If input was valid but result is NULL, it's a DST gap
-    IF (utcTime IS NULL AND p_ts IS NOT NULL) THEN
-      -- Shift forward by 1 hour to get past the gap, then convert
+    -- In a DST gap the conversion gives NULL: shift past the gap
+    IF ( utcTime IS NULL ) THEN
       SET utcTime = CONVERT_TZ( DATE_ADD(p_ts, INTERVAL 1 HOUR), @@global.time_zone, 'UTC');
     END IF;
 
   ELSE
-    -- 3. Fallback to manual offset if tables are missing
     SET utcTime = ADDTIME( p_ts, @UTC_DIFF );
   END IF;
 
