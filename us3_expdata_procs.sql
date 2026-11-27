@@ -1370,7 +1370,190 @@ BEGIN
 
 END$$
 
--- DELETEs all editedData related to an edit profile, plus information in related tables
+-- The GMP protection policy of delete_editedData (below), which reads
+-- autoflowModelsLink itself.  A model is a GMP model when
+--
+--   - a valid modelsDesc of autoflowModelsLink lists it as a modelID
+--     member of an object in the arrays under the keys 2DSA_IT, 2DSA_MC
+--     and PCSA -- the keys and the shape UltraScan3 reads
+--     (US_DataTree::parse_models_desc_json in us_manage_data; the LIMS
+--     writes the same).  Models of the other stages (2DSA, 2DSA_FM, ...)
+--     are not protected, as in UltraScan3, and neither is a modelID in a
+--     stage whose value is an object rather than an array (UltraScan3
+--     reads only arrays).  A modelID may be a string, which must be the
+--     model's ID exactly ("9405", not " 9405", "09405" or "9405,9406"),
+--     or a number equal to it (9405 or 9405.0, not 9404.6); a number a
+--     double cannot hold (1e400, which MariaDB's JSON accepts) names no
+--     model;
+--   - a modelsDesc that is not valid JSON (possible in a table created on
+--     MariaDB before 10.4.3, whose JSON columns had no CHECK yet, or in a
+--     column changed to TEXT) cannot be read by key.  UltraScan3 ignores
+--     such a row, but it still names GMP models, and a deletion cannot be
+--     undone, so here it names, under any key, the run of digits that
+--     starts within 8 characters after each "modelID" in its text (the
+--     ID of {"modelID":"9405" and of "modelID": 9405, also in a
+--     truncated text) -- written as the model's ID exactly: a run with a
+--     leading zero ("09405") names no model, nor does one that starts 8
+--     or more characters further on.  Such a row is never handed to a
+--     JSON function that would fail on it (error 4038 on MariaDB, 3141
+--     on MySQL).
+--   - NULL is no reference.
+--
+-- Helpers of pre-release copies of this file, dropped where a load left
+-- them behind (autoflow_model_ids answered anyone, without a login).
+DROP FUNCTION IF EXISTS model_in_autoflow$$
+DROP PROCEDURE IF EXISTS autoflow_model_ids$$
+
+-- Is model p_modelID another investigator's, as far as the caller verified
+-- last in this connection is concerned?  1 when the caller is not an
+-- administrator, has no modelPerson row for the model, and somebody else
+-- has one.  A model with no modelPerson row at all is nobody's: 0.
+--
+-- It reads @US3_ID and @USERLEVEL, which check_user() sets, and
+-- @US3_ADMIN, which config() sets, so the caller must have been verified
+-- in the same procedure call first.  The modelPerson rows are read with a
+-- locking read (shared), so that inside a REPEATABLE READ transaction it
+-- answers for the rows as they are, not as the transaction's snapshot has
+-- them.
+DROP FUNCTION IF EXISTS model_of_other_investigator$$
+CREATE FUNCTION model_of_other_investigator( p_modelID INT )
+  RETURNS TINYINT
+  READS SQL DATA
+
+BEGIN
+  DECLARE l_mine   INT DEFAULT 0;
+  DECLARE l_others INT DEFAULT 0;
+
+  IF ( @USERLEVEL >= @US3_ADMIN ) THEN
+    RETURN 0;
+  END IF;
+
+  SELECT SUM( personID = @US3_ID ), SUM( personID != @US3_ID )
+  INTO   l_mine, l_others
+  FROM   modelPerson
+  WHERE  modelID = p_modelID
+  LOCK IN SHARE MODE;
+
+  RETURN ( COALESCE( l_mine, 0 ) = 0 AND COALESCE( l_others, 0 ) > 0 );
+
+END$$
+
+-- DELETEs an edit profile, plus the records that depend on it:
+--   - its report documents (and their document links);
+--   - every noise record computed from it (noise.editedDataID), whichever
+--     model it was fitted with -- a global fit's noise names a model of
+--     another edit, and it is this edit's noise all the same (the noise
+--     table's foreign key forbids it to outlive the edit);
+--   - every noise record fitted with one of its models, whichever edit it
+--     was computed from;
+--   - its models (and their modelPerson rows) and pcsa_modelrecs.
+--
+-- Who may delete it
+--   An administrator, or anyone with an experimentPerson row for the
+--   edit's experiment (verify_catalog_experiment(), us3_catalog_procs.sql),
+--   the same for every experiment.  It used verify_editData_permission(),
+--   which lets anybody modify experiment 1, a "magic" ID that is a real
+--   experiment of some investigator on many servers.  Otherwise
+--   @NOTPERMITTED; @NO_EDITDATA when the edit does not exist, and
+--   @NO_EXPERIMENT when its experiment does not.  The special "UNASSIGNED"
+--   edit (editedDataID 1) cannot be deleted at all (@NOTPERMITTED): every
+--   investigator's models may be linked to it.
+--
+-- What it will not take along (@NOTPERMITTED, nothing deleted)
+--   An ordinary user's listings show only that user's own models and noise,
+--   so a client cannot show, or check, what else an edit removal would
+--   take.  The call is therefore refused, and the message names the
+--   records, when the models or noise it would delete include
+--     - a model the GMP framework refers to (the policy above:
+--       autoflowModelsLink lists it under 2DSA_IT, 2DSA_MC or PCSA, or a
+--       row that is not valid JSON names it), or noise fitted with one --
+--       for everybody, administrators included;
+--     - for anyone but an administrator, a model of another investigator
+--       (model_of_other_investigator(): somebody else's modelPerson row,
+--       none of the caller's), or noise fitted with one.
+--   A model with no modelPerson row is nobody's and does not stop the
+--   removal.  The models and noise in question, and their modelPerson
+--   rows, are read with locking reads inside the transaction (or
+--   savepoint) the deletes run in, so they are checked as they are -- also
+--   inside a caller's REPEATABLE READ transaction whose snapshot is older
+--   -- and noise another connection records against the edit meanwhile
+--   waits for the call to end.  autoflowModelsLink is read after those
+--   row locks are taken, with a shared-locking read (LOCK IN SHARE MODE),
+--   which sees the links as they are: a GMP link committed while the call
+--   waited for one of the locks is seen, also inside a caller's
+--   transaction whose snapshot is older than that link.  The read locks
+--   every row of autoflowModelsLink, and under REPEATABLE READ the gaps
+--   between them, until the transaction ends -- the call's own, or the
+--   caller's: meanwhile a connection that inserts, changes or deletes a
+--   GMP link waits (and fails with error 1205 after
+--   innodb_lock_wait_timeout, 50 s by default).  For an edit with no
+--   models and no noise, which no link can protect, the call neither
+--   reads nor locks autoflowModelsLink.  Under REPEATABLE READ the
+--   locking reads of models and noise also lock the gaps next to the
+--   edit's entries in their editedDataID indexes (next-key locks): until
+--   the transaction ends, a model or noise record inserted for this edit,
+--   or for another edit whose ID falls in such a gap, waits -- when this
+--   edit has the highest ID that has models, for every newer edit, so
+--   new fits of the latest data wait while a caller's transaction that
+--   called this procedure is open.  On a refusal inside a
+--   caller's transaction the locks stay until that transaction ends
+--   (InnoDB keeps row locks across ROLLBACK TO SAVEPOINT).
+--   Under READ COMMITTED (a caller's transaction, or the session's
+--   isolation level) InnoDB takes no gap locks, so another connection can
+--   commit a model or noise record against the edit after the call
+--   checked the edit's records.  The call deletes only the records it
+--   checked: such a newcomer stays, the edit's own delete fails on its
+--   foreign key, and the call answers @CONSTRAINT_FAILED, nothing deleted.
+--
+-- All or nothing
+--   The deletes run in a transaction of their own when the caller is not
+--   in one; inside a caller's transaction (a client may wrap several writes
+--   in one, as UltraScan3 does when it removes an edit) they run under the
+--   savepoint us3_delete_editedData_sp instead, since START TRANSACTION
+--   would commit the caller's transaction.  With autocommit off there is
+--   always a transaction, and the caller commits it.  If a delete fails,
+--   everything this call deleted is rolled back (to the savepoint, leaving
+--   the caller's transaction open with its own work), and the status says
+--   why: @CONSTRAINT_FAILED for a foreign key that still refers to the
+--   edit, @ERROR for anything else (a read-only transaction, say), with
+--   the server's message in @US3_LAST_ERROR.
+--
+-- Deadlocks
+--   A deadlock (1213) makes the server roll back the whole transaction.
+--   In a transaction of its own that only undoes this call: the status is
+--   @ERROR, and the call can be repeated.  Inside a caller's transaction it
+--   also undoes everything the caller did before; that is not reported as
+--   a status but raised again as error 1213 (SQLSTATE 40001), as for any
+--   other statement that deadlocks, so that a client cannot take it for an
+--   ordinary refusal and carry on in a transaction that is gone.  The
+--   same goes for any other error after which the savepoint is gone (a
+--   lock wait timeout with innodb_rollback_on_timeout on).  @US3_LAST_ERRNO
+--   is then @ERROR and @US3_LAST_ERROR says what happened.
+--   This call locks the edit's models before their noise.  A connection
+--   that removes a model the other way round -- its noise first and the
+--   model after, as delete_model does, and UltraScan3, which deletes the
+--   noise with delete_noise before it calls delete_model -- can deadlock
+--   with it on the same records.  That is not prevented, but reported as
+--   above: the server rolls one of the two back with error 1213, and
+--   either may be repeated.
+--
+-- Other investigators' records
+--   Ownership is checked by model (modelPerson): a noise record is the
+--   record of whoever owns the model it was fitted with, whatever edit or
+--   experiment it was computed from.  So:
+--     - an administrator's call deletes, without asking, the models other
+--       investigators fitted to this edit, every noise record fitted with
+--       them, and the noise recorded against this edit for another
+--       investigator's model of another edit (that model stays) -- the
+--       same records that make anyone else's call refuse, as above;
+--     - anyone's call, administrator or not, deletes the edit's models
+--       that have no modelPerson row and their noise, and every noise
+--       record fitted with one of the edit's models that it may delete,
+--       also when that noise was computed from an edit in another
+--       experiment, of another investigator, on which the caller has no
+--       permission at all (global-fit noise; the edit itself stays);
+--     - report documents of the edit go with it (they have no owner).
+--   No model of another edit is ever deleted.
 DROP PROCEDURE IF EXISTS delete_editedData$$
 CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
                                      p_password     VARCHAR(80),
@@ -1378,28 +1561,509 @@ CREATE PROCEDURE delete_editedData ( p_personGUID   CHAR(36),
   MODIFIES SQL DATA
 
 BEGIN
+  DECLARE l_in_trx         TINYINT DEFAULT 1;
+  DECLARE l_started        TINYINT DEFAULT 0;
+  DECLARE l_lost           TINYINT DEFAULT 0;
+  DECLARE l_errno          INT     DEFAULT 0;
+  DECLARE l_message        TEXT    DEFAULT '';
+  DECLARE l_status         INT;
+  DECLARE l_count_edits    INT     DEFAULT 0;
+  DECLARE l_experimentID   INT     DEFAULT NULL;
+  DECLARE l_gmp_models     TEXT    DEFAULT NULL;
+  DECLARE l_other_models   TEXT    DEFAULT NULL;
+  DECLARE l_gmp_noise      TEXT    DEFAULT NULL;
+  DECLARE l_other_noise    TEXT    DEFAULT NULL;
+  DECLARE l_gmp_noise2     TEXT    DEFAULT NULL;
+  DECLARE l_other_noise2   TEXT    DEFAULT NULL;
+  DECLARE l_candidates     LONGBLOB DEFAULT ',';
+  DECLARE l_model_ids      LONGBLOB DEFAULT ',';
+  DECLARE l_noise_ids      LONGBLOB DEFAULT ',';
+  DECLARE l_gmp_ids        LONGBLOB DEFAULT ',';
+
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    GET DIAGNOSTICS CONDITION 1
+      l_errno = MYSQL_ERRNO, l_message = MESSAGE_TEXT;
+
+    IF ( l_started = 1 ) THEN
+      IF ( l_errno = 1213 ) THEN
+        -- The server has rolled back the whole transaction, savepoint and
+        -- all; there is nothing left to undo
+        SET l_lost = l_in_trx;
+
+      ELSEIF ( l_in_trx = 1 ) THEN
+        BEGIN
+          -- The savepoint is gone when the server rolled the transaction
+          -- back itself
+          DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_lost = 1;
+          ROLLBACK TO SAVEPOINT us3_delete_editedData_sp;
+          IF ( l_lost = 0 ) THEN
+            RELEASE SAVEPOINT us3_delete_editedData_sp;
+          END IF;
+        END;
+
+      ELSE
+        ROLLBACK;
+
+      END IF;
+    END IF;
+
+    SET @US3_LAST_ERRNO = @ERROR;
+
+    IF ( l_lost = 1 ) THEN
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: error ',
+                                    l_errno, ': ', l_message, ' -- the server ',
+                                    'rolled back the whole transaction, with ',
+                                    'everything done in it before this call' );
+
+      IF ( l_errno = 1213 ) THEN
+        SIGNAL SQLSTATE '40001'
+          SET MYSQL_ERRNO  = 1213,
+              MESSAGE_TEXT = 'delete_editedData: deadlock; the server rolled back the whole transaction, the caller''s earlier work too';
+      ELSE
+        SET l_message = LEFT( CONCAT( 'delete_editedData: the server rolled back the whole transaction: ',
+                                      l_message ), 128 );
+        SIGNAL SQLSTATE 'HY000'
+          SET MYSQL_ERRNO  = l_errno,
+              MESSAGE_TEXT = l_message;
+      END IF;
+
+    END IF;
+
+    IF ( l_errno IN ( 1451, 1452 ) ) THEN
+      SET @US3_LAST_ERRNO = @CONSTRAINT_FAILED;
+    END IF;
+
+    SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted, and nothing ',
+                                  'that depends on it was: error ', l_errno,
+                                  ': ', l_message );
+
+    SELECT @US3_LAST_ERRNO AS status;
+
+  END;
+
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
 
-  IF ( verify_editData_permission( p_personGUID, p_password, p_editedDataID ) = @OK ) THEN
+  -- verify_catalog_experiment() matches experimentPerson against @US3_ID
+  -- and @USERLEVEL, which verify_user() sets
+  SET l_status = verify_user( p_personGUID, p_password );
 
-    -- Make sure records match if they have related tables or not
-    DELETE      reportDocument, documentLink
-    FROM        reportDocument
-    LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
-    WHERE       reportDocument.editedDataID = p_editedDataID;
+  SELECT     COUNT(*), MAX( r.experimentID )
+  INTO       l_count_edits, l_experimentID
+  FROM       editedData d
+  LEFT JOIN  rawData r ON ( r.rawDataID = d.rawDataID )
+  WHERE      d.editedDataID = p_editedDataID;
 
-    DELETE      model, noise, modelPerson, pcsa_modelrecs
-    FROM        editedData
-    LEFT JOIN   model       ON ( model.editedDataID   = editedData.editedDataID )
-    LEFT JOIN   noise       ON ( noise.modelID        = model.modelID )
-    LEFT JOIN   modelPerson ON ( modelPerson.modelID  = model.modelID )
-    LEFT JOIN   pcsa_modelrecs ON ( pcsa_modelrecs.editedDataID = editedData.editedDataID )
-    WHERE       editedData.editedDataID = p_editedDataID;
+  IF ( l_status != @OK ) THEN
+    -- check_user() has recorded why in @US3_LAST_ERROR
+    SET @US3_LAST_ERRNO = l_status;
 
-    DELETE      FROM editedData
-    WHERE       editedData.editedDataID = p_editedDataID;
+  ELSEIF ( p_editedDataID = 1 ) THEN
+    SET @US3_LAST_ERRNO = @NOTPERMITTED;
+    SET @US3_LAST_ERROR = 'MySQL: the UNASSIGNED edit profile cannot be deleted';
+
+  ELSEIF ( l_count_edits = 0 ) THEN
+    SET @US3_LAST_ERRNO = @NO_EDITDATA;
+    SET @US3_LAST_ERROR = 'MySQL: no edit profile with that ID exists';
+
+  ELSEIF ( verify_catalog_experiment( l_experimentID ) != @OK ) THEN
+    -- @NO_EXPERIMENT or @NOTPERMITTED
+    IF ( @US3_LAST_ERRNO = @NOTPERMITTED ) THEN
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to modify this experiment';
+    END IF;
+
+  ELSE
+
+    -- Is the caller in a transaction?  A savepoint outlives the statement
+    -- that set it only inside one; outside, autocommit ends it at once and
+    -- releasing it fails.  (@@in_transaction would say so directly, but
+    -- MySQL does not have it.)
+    BEGIN
+      DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET l_in_trx = 0;
+      SAVEPOINT us3_delete_editedData_sp;
+      RELEASE SAVEPOINT us3_delete_editedData_sp;
+    END;
+
+    IF ( l_in_trx = 1 ) THEN
+      SAVEPOINT us3_delete_editedData_sp;
+    ELSE
+      START TRANSACTION;
+    END IF;
+    SET l_started = 1;
+
+    -- What would go that must not: the edit's models, the noise computed
+    -- from the edit, and the noise fitted with its models -- read with
+    -- locking reads, which see what is committed now even under the
+    -- snapshot of a caller's REPEATABLE READ transaction.  They lock only
+    -- rows the deletes below lock anyway.  Another investigator's records
+    -- first: these reads take the row locks, and may wait for them.
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, modelID, NULL )
+                             ORDER BY modelID )
+    INTO       l_other_models
+    FROM       model
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( modelID ) = 1, noiseID, NULL )
+                             ORDER BY noiseID )
+    INTO       l_other_noise
+    FROM       noise
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( model_of_other_investigator( n.modelID ) = 1, n.noiseID, NULL )
+                             ORDER BY n.noiseID )
+    INTO       l_other_noise2
+    FROM       model m
+    JOIN       noise n ON ( n.modelID = m.modelID )
+    WHERE      m.editedDataID = p_editedDataID
+    AND        n.editedDataID != p_editedDataID
+    FOR UPDATE;
+
+    -- The edit's models (l_model_ids) and the noise recorded against it
+    -- (l_noise_ids), each as a list ",id,id,...,": the records checked
+    -- above and below, read with locking reads of rows locked above, so
+    -- that they are the rows as they are.  The deletes take only these.
+    -- Under READ COMMITTED, which takes no gap locks, another connection
+    -- can commit a model or noise record against the edit after these
+    -- reads; it stays, and the edit's own delete then fails on its
+    -- foreign key (@CONSTRAINT_FAILED, everything rolled back) rather than
+    -- deleting a record nobody checked.  (Noise fitted with one of the
+    -- edit's models is that model's, and goes with it however late it
+    -- came: the model was checked.)  And the models whose GMP links
+    -- matter (l_candidates): the edit's models (the noise fitted with
+    -- them is theirs) and the models the noise recorded against the edit
+    -- was fitted with.
+    BEGIN
+      DECLARE l_done  TINYINT DEFAULT 0;
+      DECLARE l_model INT;
+      DECLARE l_noise INT;
+
+      DECLARE c_models CURSOR FOR
+        SELECT   modelID
+        FROM     model
+        WHERE    editedDataID = p_editedDataID
+        FOR UPDATE;
+
+      DECLARE c_noise_models CURSOR FOR
+        SELECT   noiseID, modelID
+        FROM     noise
+        WHERE    editedDataID = p_editedDataID
+        FOR UPDATE;
+
+      DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
+
+      OPEN c_models;
+      models: LOOP
+        FETCH c_models INTO l_model;
+        IF ( l_done = 1 ) THEN
+          LEAVE models;
+        END IF;
+        SET l_candidates = CONCAT( l_candidates, l_model, ',' );
+      END LOOP;
+      CLOSE c_models;
+      SET l_model_ids = l_candidates;
+
+      SET l_done = 0;
+      OPEN c_noise_models;
+      noise_models: LOOP
+        FETCH c_noise_models INTO l_noise, l_model;
+        IF ( l_done = 1 ) THEN
+          LEAVE noise_models;
+        END IF;
+        SET l_noise_ids = CONCAT( l_noise_ids, l_noise, ',' );
+        IF ( LOCATE( CONCAT( ',', l_model, ',' ), l_candidates ) = 0 ) THEN
+          SET l_candidates = CONCAT( l_candidates, l_model, ',' );
+        END IF;
+      END LOOP;
+      CLOSE c_noise_models;
+    END;
+
+    -- Which of them GMP refers to (the policy above the procedure), into
+    -- l_gmp_ids, ",id,id,...,".  autoflowModelsLink is read only now that
+    -- the rows are locked, and with a locking read, so that a link
+    -- committed while this call waited for a lock is seen: inside a
+    -- caller's transaction a plain read would see the snapshot that the
+    -- plain reads at the start of the call took.  The shared locks hold
+    -- every row of the table, and under REPEATABLE READ its gaps, until
+    -- the transaction ends; GMP writers wait meanwhile.  Every row once
+    -- (none when there are no candidates); each ID a row names is looked
+    -- up in the short candidate list, so the call costs one pass over the
+    -- table, and its time grows linearly with the number of links.
+    -- Only JSON_VALID, JSON_EXTRACT, JSON_LENGTH and JSON_UNQUOTE (MySQL
+    -- 5.7.8, MariaDB 10.2.3; us3.sql's JSON column needs MariaDB 10.2.7),
+    -- not JSON_TABLE (MySQL 8.0.4, MariaDB 10.6).
+    BEGIN
+      DECLARE l_done   TINYINT DEFAULT 0;
+      DECLARE l_desc   LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_ids    LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_value  LONGTEXT CHARACTER SET utf8mb4;
+      DECLARE l_id     LONGBLOB;
+      DECLARE l_raw    LONGBLOB;
+      DECLARE l_count  INT;
+      DECLARE l_i      INT;
+      DECLARE l_pos    INT;
+      DECLARE l_start  INT;
+      DECLARE l_end    INT;
+      DECLARE l_length INT;
+      DECLARE l_number DOUBLE;
+      DECLARE l_valid  TINYINT;
+      DECLARE l_few    TINYINT;
+      DECLARE l_maybe  TINYINT;
+      DECLARE l_cpos   INT;
+      DECLARE l_cend   INT;
+
+      DECLARE c_links CURSOR FOR
+        SELECT modelsDesc
+        FROM   autoflowModelsLink
+        WHERE  modelsDesc IS NOT NULL
+        LOCK IN SHARE MODE;
+
+      DECLARE CONTINUE HANDLER FOR NOT FOUND SET l_done = 1;
+
+      -- With no candidates (an edit with no models and no noise) there is
+      -- nothing a link could protect, and the table is not read at all
+      IF ( l_candidates = ',' ) THEN
+        SET l_done = 1;
+      ELSE
+        OPEN c_links;
+      END IF;
+
+      -- With a few candidates, the IDs a row names are looked at one by
+      -- one only when its text may hold one of them; see below
+      SET l_few = ( LENGTH( l_candidates ) - LENGTH( REPLACE( l_candidates, ',', '' ) ) <= 33 );
+
+      links: LOOP
+        IF ( l_done = 0 ) THEN
+          FETCH c_links INTO l_desc;
+        END IF;
+        IF ( l_done = 1 ) THEN
+          LEAVE links;
+        END IF;
+
+        SET l_valid = JSON_VALID( l_desc );
+        IF ( l_valid ) THEN
+          -- An array of the stages' modelID values, NULL when there are none
+          SET l_ids   = JSON_EXTRACT( l_desc, '$."2DSA_IT"[*].modelID',
+                                              '$."2DSA_MC"[*].modelID',
+                                              '$.PCSA[*].modelID' );
+          SET l_raw   = CAST( l_ids AS BINARY );
+        ELSE
+          SET l_raw   = CAST( l_desc AS BINARY );
+        END IF;
+
+        -- The pre-filter.  Taking the IDs one by one is what a row costs,
+        -- and most rows name none of the candidates.  Text that holds none
+        -- of their IDs, bytewise, names none -- by the rules below a
+        -- string must be the ID itself, a number written without an
+        -- exponent holds its digits (9404.0 holds 9404), and a row that is
+        -- not JSON is read by its digits -- unless it is JSON with a
+        -- backslash (an escape such as \u0039 can spell a digit) or an e
+        -- (an exponent: 9.404e3) in it.  For JSON the text is that of the
+        -- stages' modelID values alone (l_ids: no GUID, no key), so the
+        -- test is short.  With many candidates (one LOCATE each would
+        -- cost more than it saves) every row is looked at.
+        IF ( l_few = 1 ) THEN
+          SET l_maybe = 0;
+          SET l_cpos  = 2;
+          WHILE ( l_maybe = 0 AND l_cpos < LENGTH( l_candidates ) ) DO
+            SET l_cend = LOCATE( ',', l_candidates, l_cpos );
+            IF ( LOCATE( SUBSTRING( l_candidates, l_cpos, l_cend - l_cpos ), l_raw ) > 0 ) THEN
+              SET l_maybe = 1;
+            END IF;
+            SET l_cpos = l_cend + 1;
+          END WHILE;
+
+          IF ( l_maybe = 0 AND l_valid AND
+               ( LOCATE( CHAR( 92 ), l_raw ) > 0 ) ) THEN
+            SET l_maybe = 1;
+          END IF;
+
+          IF ( l_maybe = 0 AND l_valid AND
+               ( LOCATE( 'e', l_raw ) > 0 OR LOCATE( 'E', l_raw ) > 0 ) ) THEN
+            SET l_maybe = 1;
+          END IF;
+
+          IF ( COALESCE( l_maybe, 1 ) = 0 ) THEN
+            ITERATE links;
+          END IF;
+        END IF;
+
+        IF ( l_valid ) THEN
+          SET l_count = COALESCE( JSON_LENGTH( l_ids ), 0 );
+          SET l_i     = 0;
+
+          WHILE ( l_i < l_count ) DO
+            SET l_value = JSON_EXTRACT( l_ids, CONCAT( '$[', l_i, ']' ) );
+            SET l_id    = NULL;
+
+            IF ( LEFT( l_value, 1 ) = '"' ) THEN
+              -- A string: as it is (with a comma in it, it is no list item)
+              SET l_id = REPLACE( JSON_UNQUOTE( l_value ), ',', ' ' );
+
+            ELSEIF ( LEFT( l_value, 1 ) IN ( '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' ) ) THEN
+              -- A number: when it is a whole number a model ID can be.  One
+              -- a double cannot hold (MariaDB's JSON accepts 1e400) is
+              -- none, and must not fail the call (error 1292)
+              SET l_number = NULL;
+              BEGIN
+                DECLARE CONTINUE HANDLER FOR 1292, 1264, 1367, 1690, SQLWARNING
+                  SET l_number = NULL;
+                SET l_number = l_value + 0;
+              END;
+              IF ( l_number = FLOOR( l_number ) AND ABS( l_number ) < 2147483648 ) THEN
+                SET l_id = CAST( l_number AS SIGNED );
+              END IF;
+
+            END IF;
+
+            IF ( LOCATE( CONCAT( ',', l_id, ',' ), l_candidates ) > 0 AND
+                 LOCATE( CONCAT( ',', l_id, ',' ), l_gmp_ids ) = 0 ) THEN
+              SET l_gmp_ids = CONCAT( l_gmp_ids, l_id, ',' );
+            END IF;
+
+            SET l_i = l_i + 1;
+          END WHILE;
+
+        ELSE
+          -- Not JSON: the digits after each "modelID", bytewise (l_raw)
+          SET l_length = LENGTH( l_raw );
+          SET l_pos    = LOCATE( 'modelID', l_raw );
+
+          WHILE ( l_pos > 0 ) DO
+            SET l_start = l_pos + 7;
+            WHILE ( l_start < l_pos + 15 AND l_start <= l_length AND
+                    SUBSTRING( l_raw, l_start, 1 ) NOT BETWEEN '0' AND '9' ) DO
+              SET l_start = l_start + 1;
+            END WHILE;
+
+            SET l_end = l_start;
+            WHILE ( l_end <= l_length AND SUBSTRING( l_raw, l_end, 1 ) BETWEEN '0' AND '9' ) DO
+              SET l_end = l_end + 1;
+            END WHILE;
+
+            IF ( l_end > l_start ) THEN
+              SET l_id = SUBSTRING( l_raw, l_start, l_end - l_start );
+              IF ( LOCATE( CONCAT( ',', l_id, ',' ), l_candidates ) > 0 AND
+                   LOCATE( CONCAT( ',', l_id, ',' ), l_gmp_ids ) = 0 ) THEN
+                SET l_gmp_ids = CONCAT( l_gmp_ids, l_id, ',' );
+              END IF;
+            END IF;
+
+            SET l_pos = LOCATE( 'modelID', l_raw, l_pos + 7 );
+          END WHILE;
+
+        END IF;
+
+      END LOOP;
+
+      IF ( l_candidates != ',' ) THEN
+        CLOSE c_links;
+      END IF;
+    END;
+
+    -- The edit's records that go with a GMP model (l_gmp_ids holds only
+    -- candidates, so this is short)
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, modelID, NULL )
+                             ORDER BY modelID )
+    INTO       l_gmp_models
+    FROM       model
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', modelID, ',' ), l_gmp_ids ) > 0, noiseID, NULL )
+                             ORDER BY noiseID )
+    INTO       l_gmp_noise
+    FROM       noise
+    WHERE      editedDataID = p_editedDataID
+    FOR UPDATE;
+
+    SELECT     GROUP_CONCAT( IF( LOCATE( CONCAT( ',', n.modelID, ',' ), l_gmp_ids ) > 0, n.noiseID, NULL )
+                             ORDER BY n.noiseID )
+    INTO       l_gmp_noise2
+    FROM       model m
+    JOIN       noise n ON ( n.modelID = m.modelID )
+    WHERE      m.editedDataID = p_editedDataID
+    AND        n.editedDataID != p_editedDataID
+    FOR UPDATE;
+
+    SET l_gmp_noise   = NULLIF( CONCAT_WS( ',', l_gmp_noise,   l_gmp_noise2   ), '' );
+    SET l_other_noise = NULLIF( CONCAT_WS( ',', l_other_noise, l_other_noise2 ), '' );
+
+    IF ( l_gmp_models IS NOT NULL OR l_gmp_noise IS NOT NULL ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: it would take along ',
+                                    'records the GMP framework refers to (',
+                                    CONCAT_WS( '; ',
+                                      CONCAT( 'models ', l_gmp_models ),
+                                      CONCAT( 'noise of such models ', l_gmp_noise ) ),
+                                    ')' );
+
+    ELSEIF ( l_other_models IS NOT NULL OR l_other_noise IS NOT NULL ) THEN
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = CONCAT( 'MySQL: the edit was not deleted: it would take along ',
+                                    'records of another investigator, which only an ',
+                                    'administrator may delete (',
+                                    CONCAT_WS( '; ',
+                                      CONCAT( 'models ', l_other_models ),
+                                      CONCAT( 'noise of such models ', l_other_noise ) ),
+                                    ')' );
+
+    ELSE
+      -- Children before parents, so that no foreign key is checked against
+      -- a row that is about to go
+      DELETE      reportDocument, documentLink
+      FROM        reportDocument
+      LEFT JOIN   documentLink ON ( documentLink.reportDocumentID = reportDocument.reportDocumentID )
+      WHERE       reportDocument.editedDataID = p_editedDataID;
+
+      -- Only the edit's records checked above (see l_model_ids)
+      DELETE      FROM noise
+      WHERE       editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', noiseID, ',' ), l_noise_ids ) > 0;
+
+      DELETE      noise
+      FROM        noise
+      JOIN        model ON ( model.modelID = noise.modelID )
+      WHERE       model.editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', model.modelID, ',' ), l_model_ids ) > 0;
+
+      DELETE      modelPerson
+      FROM        modelPerson
+      JOIN        model ON ( model.modelID = modelPerson.modelID )
+      WHERE       model.editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', model.modelID, ',' ), l_model_ids ) > 0;
+
+      DELETE      FROM model
+      WHERE       editedDataID = p_editedDataID
+      AND         LOCATE( CONCAT( ',', modelID, ',' ), l_model_ids ) > 0;
+
+      DELETE      FROM pcsa_modelrecs
+      WHERE       editedDataID = p_editedDataID;
+
+      DELETE      FROM editedData
+      WHERE       editedDataID = p_editedDataID;
+
+    END IF;
+
+    -- A refusal deleted nothing, but ends the transaction or the savepoint
+    -- all the same
+    IF ( @US3_LAST_ERRNO = @OK ) THEN
+      IF ( l_in_trx = 1 ) THEN
+        RELEASE SAVEPOINT us3_delete_editedData_sp;
+      ELSE
+        COMMIT;
+      END IF;
+    ELSE
+      IF ( l_in_trx = 1 ) THEN
+        ROLLBACK TO SAVEPOINT us3_delete_editedData_sp;
+        RELEASE SAVEPOINT us3_delete_editedData_sp;
+      ELSE
+        ROLLBACK;
+      END IF;
+    END IF;
 
   END IF;
 
