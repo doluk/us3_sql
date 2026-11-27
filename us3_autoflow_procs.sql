@@ -431,7 +431,11 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     INSERT INTO autoflowHistory SELECT * FROM autoflow WHERE ID = p_ID;
     
-    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    -- The copy keeps the original record's ID; LAST_INSERT_ID() would be
+    -- this connection's previous AUTO_INCREMENT insert
+    IF ( ROW_COUNT() > 0 ) THEN
+      SET @LAST_INSERT_ID = p_ID;
+    END IF;
 
   END IF;
 
@@ -458,7 +462,9 @@ BEGIN
     INSERT INTO autoflowStages SET
       autoflowID        = p_id;
 
-    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    -- The key is the caller's autoflowID; LAST_INSERT_ID() would be this
+    -- connection's previous AUTO_INCREMENT insert
+    SET @LAST_INSERT_ID = p_id;
 
   END IF;
 
@@ -3041,7 +3047,9 @@ BEGIN
     INSERT INTO autoflowAnalysisABDEStages SET
       autoflowID        = p_id;
 
-    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    -- The key is the caller's autoflowID; LAST_INSERT_ID() would be this
+    -- connection's previous AUTO_INCREMENT insert
+    SET @LAST_INSERT_ID = p_id;
 
   END IF;
 
@@ -3819,12 +3827,15 @@ BEGIN
   CALL config();
   SET @US3_LAST_ERRNO = @OK;
   SET @US3_LAST_ERROR = '';
+  SET @LAST_INSERT_ID = 0;
 
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     INSERT INTO autoflowAnalysisVelMwlStages SET
       autoflowID        = p_autoflowID;
 
-    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    -- The key is the caller's autoflowID; LAST_INSERT_ID() would be this
+    -- connection's previous AUTO_INCREMENT insert
+    SET @LAST_INSERT_ID = p_autoflowID;
 
   END IF;
 
@@ -5752,7 +5763,11 @@ BEGIN
   IF ( verify_user( p_personGUID, p_password ) = @OK ) THEN
     INSERT INTO autoflowGMPReportEsignHistory SELECT * FROM autoflowGMPReportEsign WHERE ID = p_ID;
     
-    SET @LAST_INSERT_ID = LAST_INSERT_ID();
+    -- The copy keeps the original record's ID; LAST_INSERT_ID() would be
+    -- this connection's previous AUTO_INCREMENT insert
+    IF ( ROW_COUNT() > 0 ) THEN
+      SET @LAST_INSERT_ID = p_ID;
+    END IF;
 
   END IF;
 
