@@ -9,7 +9,12 @@
 DELIMITER $$
 
 -- Verifies that the user has permission to view or modify
---  the specified model
+--  the specified model: an administrator, or the person of its
+--  modelPerson row.  The modelPerson row is matched against the caller
+--  once the caller has logged in (check_user() sets @US3_ID), not
+--  against the @US3_ID a previous login on the connection left behind,
+--  which on a new connection is NULL and on a reused one may be
+--  somebody else's.
 DROP FUNCTION IF EXISTS verify_model_permission$$
 CREATE FUNCTION verify_model_permission( p_personGUID  CHAR(36),
                                          p_password    VARCHAR(80),
@@ -31,12 +36,6 @@ BEGIN
   FROM   model
   WHERE  modelID = p_modelID;
 
-  SELECT COUNT(*)
-  INTO   count_permissions
-  FROM   modelPerson
-  WHERE  modelID = p_modelID
-  AND    personID = @US3_ID;
-
   IF ( count_models = 0 ) THEN
     SET @US3_LAST_ERRNO = @NO_MODEL;
     SET @US3_LAST_ERROR = 'MySQL: the specified model does not exist';
@@ -49,18 +48,31 @@ BEGIN
 
     SET status = @OK;
 
-  ELSEIF ( ( verify_user( p_personGUID, p_password ) = @OK ) &&
-           ( count_permissions > 0                         ) ) THEN
-    SET @US3_LAST_ERRNO = @OK;
-    SET @US3_LAST_ERROR = '';
-
-    SET status = @OK;
-
   ELSE
-    SET @US3_LAST_ERRNO = @NOTPERMITTED;
-    SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view or modify this model';
+    -- The caller has logged in now (verify_userlevel() above; this call
+    -- gives the login's status), so @US3_ID is the caller's, NULL when
+    -- the login failed
+    SET status = verify_user( p_personGUID, p_password );
 
-    SET status = @NOTPERMITTED;
+    SELECT COUNT(*)
+    INTO   count_permissions
+    FROM   modelPerson
+    WHERE  modelID = p_modelID
+    AND    personID = @US3_ID;
+
+    IF ( ( status = @OK ) && ( count_permissions > 0 ) ) THEN
+      SET @US3_LAST_ERRNO = @OK;
+      SET @US3_LAST_ERROR = '';
+
+      SET status = @OK;
+
+    ELSE
+      SET @US3_LAST_ERRNO = @NOTPERMITTED;
+      SET @US3_LAST_ERROR = 'MySQL: you do not have permission to view or modify this model';
+
+      SET status = @NOTPERMITTED;
+
+    END IF;
 
   END IF;
 
